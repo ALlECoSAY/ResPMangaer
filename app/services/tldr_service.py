@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,47 +13,46 @@ from app.db.repositories import (
 )
 from app.llm.openrouter_client import LlmResponse, OpenRouterClient, OpenRouterError
 from app.llm.prompts import TLDR_SYSTEM_PROMPT, build_tldr_user_prompt
+from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
 from app.services.thread_activity import ThreadActivity, detect_activity_periods
 from app.utils.time import parse_lookback
 
 log = get_logger(__name__)
 
+TldrScope = Literal["thread", "all"]
+
+_SCOPE_DESCRIPTIONS: dict[TldrScope, str] = {
+    "thread": "Recent activity from the current thread only.",
+    "all": "Recent activity across all threads in this chat.",
+}
+
 
 @dataclass
 class TldrRequest:
-    scope: str  # "other" | "all" | "thread"
+    scope: TldrScope
     lookback_hours: int
     scope_description: str
 
 
-def parse_tldr_args(args: str, default_lookback_hours: int) -> TldrRequest:
-    """Parse `/tldr [thread|all|<duration>]`.
+def parse_tldr_lookback(args: str, default_lookback_hours: int) -> int:
+    """Parse a lookback duration token (e.g. `24h`, `2d`) from `/tldr` args.
 
-    The user can combine duration with scope, e.g. `/tldr thread 24h`.
+    Unknown tokens are ignored; falls back to ``default_lookback_hours``.
     """
-    scope = "other"
-    lookback = default_lookback_hours
     for token in (args or "").split():
-        token_low = token.lower()
-        if token_low == "all":
-            scope = "all"
-            continue
-        if token_low == "thread":
-            scope = "thread"
-            continue
-        parsed = parse_lookback(token_low)
+        parsed = parse_lookback(token.lower())
         if parsed is not None:
-            lookback = parsed
-    desc_map = {
-        "other": "Recent activity from other threads in this chat (current thread excluded).",
-        "all": "Recent activity across all threads in this chat (including current).",
-        "thread": "Recent activity from the current thread only.",
-    }
+            return parsed
+    return default_lookback_hours
+
+
+def make_tldr_request(scope: TldrScope, lookback_hours: int) -> TldrRequest:
+    desc = _SCOPE_DESCRIPTIONS[scope]
     return TldrRequest(
         scope=scope,
-        lookback_hours=lookback,
-        scope_description=f"{desc_map[scope]} Lookback: ~{lookback}h.",
+        lookback_hours=lookback_hours,
+        scope_description=f"{desc} Lookback: ~{lookback_hours}h.",
     )
 
 
@@ -80,9 +80,22 @@ class TldrService:
         self,
         settings: Settings,
         client: OpenRouterClient,
+        runtime_config: RuntimeContextConfig,
     ) -> None:
         self._settings = settings
         self._client = client
+        self._runtime_config = runtime_config
+
+    def _limits_for(self, scope: TldrScope) -> tuple[int, int]:
+        if scope == "thread":
+            return (
+                self._runtime_config.tldr_max_threads,
+                self._runtime_config.tldr_max_messages_per_thread,
+            )
+        return (
+            self._runtime_config.tldr_all_max_threads,
+            self._runtime_config.tldr_all_max_messages_per_thread,
+        )
 
     async def summarize(
         self,
@@ -97,28 +110,26 @@ class TldrService:
         Raises OpenRouterError on LLM failures.
         """
         only_thread_id: int | None = None
-        exclude_thread_id: int | None = None
         if request.scope == "thread":
             only_thread_id = message_thread_id
-        elif request.scope == "other":
-            exclude_thread_id = message_thread_id
-        # scope == "all" -> neither filter
+
+        max_threads, max_messages_per_thread = self._limits_for(request.scope)
 
         messages = await fetch_messages_for_tldr(
             session,
             chat_id=chat_id,
             lookback_hours=request.lookback_hours,
-            exclude_thread_id=exclude_thread_id,
+            exclude_thread_id=None,
             only_thread_id=only_thread_id,
         )
         thread_titles = await get_thread_titles(session, chat_id)
         activities = detect_activity_periods(
             messages,
             activity_gap_minutes=self._settings.tldr_activity_gap_minutes,
-            max_messages_per_thread=self._settings.tldr_max_messages_per_thread,
+            max_messages_per_thread=max_messages_per_thread,
             thread_titles=thread_titles,
         )
-        context_text = _format_activity(activities, self._settings.tldr_max_threads)
+        context_text = _format_activity(activities, max_threads)
         # Trim to max_context_chars budget.
         if len(context_text) > self._settings.max_context_chars:
             lines = context_text.split("\n")
@@ -127,15 +138,16 @@ class TldrService:
             context_text = "\n".join(lines)
 
         if not context_text.strip():
-            return None, "No meaningful recent activity found in other threads."
+            return None, "No meaningful recent activity found."
 
         user_prompt = build_tldr_user_prompt(request.scope_description, context_text)
         if self._settings.log_prompts:
-            log.info("tldr.prompt", prompt=user_prompt)
+            log.info("tldr.prompt", scope=request.scope, prompt=user_prompt)
 
         success = False
         error: str | None = None
         response: LlmResponse | None = None
+        command_name = "tldr_all" if request.scope == "all" else "tldr"
         try:
             response = await self._client.complete(TLDR_SYSTEM_PROMPT, user_prompt)
             success = True
@@ -149,7 +161,7 @@ class TldrService:
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
                 request_message_id=request_message_id,
-                command_name="tldr",
+                command_name=command_name,
                 model=self._settings.openrouter_model,
                 prompt_tokens_estimate=response.prompt_tokens if response else None,
                 completion_tokens_estimate=response.completion_tokens if response else None,

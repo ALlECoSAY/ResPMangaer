@@ -1,0 +1,10 @@
+version: 1
+ai:
+  max_same_thread_messages: 80
+  max_cross_thread_messages: 30
+tldr:
+  max_threads: 1
+  max_messages_per_thread: 200
+tldr_all:
+  max_threads: 12
+  max_messages_per_thread: 120

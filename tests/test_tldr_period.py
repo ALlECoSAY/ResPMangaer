@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.services.thread_activity import detect_activity_periods
-from app.services.tldr_service import parse_tldr_args
+from app.services.tldr_service import make_tldr_request, parse_tldr_lookback
 
 
 def _msg(thread_id: int, when: datetime, body: str = "x") -> SimpleNamespace:
@@ -42,21 +42,29 @@ def test_detect_caps_per_thread():
     assert len(activities[0].messages) == 10
 
 
-def test_parse_tldr_args_default():
-    req = parse_tldr_args("", default_lookback_hours=48)
-    assert req.scope == "other" and req.lookback_hours == 48
+def test_parse_tldr_lookback_default():
+    assert parse_tldr_lookback("", default_lookback_hours=48) == 48
 
 
-def test_parse_tldr_args_all_with_duration():
-    req = parse_tldr_args("all 6h", default_lookback_hours=48)
-    assert req.scope == "all" and req.lookback_hours == 6
+def test_parse_tldr_lookback_with_duration():
+    assert parse_tldr_lookback("6h", default_lookback_hours=48) == 6
 
 
-def test_parse_tldr_args_thread_2d():
-    req = parse_tldr_args("thread 2d", default_lookback_hours=48)
-    assert req.scope == "thread" and req.lookback_hours == 48
+def test_parse_tldr_lookback_ignores_unknown_tokens():
+    assert parse_tldr_lookback("all 6h", default_lookback_hours=48) == 6
 
 
-def test_parse_tldr_args_2d_only():
-    req = parse_tldr_args("2d", default_lookback_hours=48)
-    assert req.scope == "other" and req.lookback_hours == 48
+def test_parse_tldr_lookback_2d():
+    assert parse_tldr_lookback("2d", default_lookback_hours=12) == 48  # 2d == 48h
+
+
+def test_make_tldr_request_thread_scope():
+    req = make_tldr_request(scope="thread", lookback_hours=24)
+    assert req.scope == "thread" and req.lookback_hours == 24
+    assert "current thread" in req.scope_description.lower()
+
+
+def test_make_tldr_request_all_scope():
+    req = make_tldr_request(scope="all", lookback_hours=12)
+    assert req.scope == "all" and req.lookback_hours == 12
+    assert "all threads" in req.scope_description.lower()

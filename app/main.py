@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.db.session import dispose_engine, init_engine
 from app.llm.context_builder import ContextBuilder
 from app.llm.openrouter_client import OpenRouterClient
+from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import configure_logging, get_logger
 from app.services.ai_answer_service import AiAnswerService
 from app.services.tldr_service import TldrService
@@ -39,9 +40,18 @@ async def run() -> int:
         site_url=settings.openrouter_site_url,
         site_name=settings.openrouter_site_name,
     )
-    context_builder = ContextBuilder(settings)
+    runtime_context_config = RuntimeContextConfig(
+        path=settings.context_limits_yaml_path,
+        default_ai_same_thread=settings.max_same_thread_messages,
+        default_ai_cross_thread=settings.max_cross_thread_messages,
+        default_tldr_max_threads=settings.tldr_max_threads,
+        default_tldr_max_messages_per_thread=settings.tldr_max_messages_per_thread,
+        default_tldr_all_max_threads=settings.tldr_all_max_threads,
+        default_tldr_all_max_messages_per_thread=settings.tldr_all_max_messages_per_thread,
+    )
+    context_builder = ContextBuilder(settings, runtime_context_config)
     ai_service = AiAnswerService(settings, context_builder, openrouter)
-    tldr_service = TldrService(settings, openrouter)
+    tldr_service = TldrService(settings, openrouter, runtime_context_config)
 
     bot, dp, _state = await configure_bot(
         settings=settings,

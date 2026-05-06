@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     access_control_enabled: bool = True
     whitelist_yaml_path: Path = Path("/app/config/whitelist.yaml")
     admins_yaml_path: Path = Path("/app/config/admins.yaml")
+    context_limits_yaml_path: Path = Path("/app/config/context_limits.yaml")
 
     # OpenRouter
     openrouter_api_key: str = Field(default="")
@@ -49,8 +50,12 @@ class Settings(BaseSettings):
     max_reply_chars: int = 3_900
     tldr_activity_gap_minutes: int = 180
     tldr_lookback_hours: int = 48
-    tldr_max_threads: int = 12
-    tldr_max_messages_per_thread: int = 120
+    # /tldr — current thread only.
+    tldr_max_threads: int = 1
+    tldr_max_messages_per_thread: int = 200
+    # /tldr_all — all threads in the chat.
+    tldr_all_max_threads: int = 12
+    tldr_all_max_messages_per_thread: int = 120
 
     # Safety / privacy
     store_bot_messages: bool = True

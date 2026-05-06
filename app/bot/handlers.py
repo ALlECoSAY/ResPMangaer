@@ -20,7 +20,12 @@ from app.db.session import session_scope
 from app.llm.openrouter_client import OpenRouterError
 from app.logging_config import get_logger
 from app.services.ai_answer_service import AiAnswerService
-from app.services.tldr_service import TldrService, parse_tldr_args
+from app.services.tldr_service import (
+    TldrScope,
+    TldrService,
+    make_tldr_request,
+    parse_tldr_lookback,
+)
 from app.utils.telegram import display_name, message_thread_id_for
 
 WL_CB_ADD = "wl:add:"
@@ -119,8 +124,7 @@ def build_router(
                 reply_to_message_id=message.message_id,
             )
 
-    @router.message(Command("tldr", ignore_case=True))
-    async def handle_tldr(message: Message, bot: Bot) -> None:
+    async def _run_tldr(scope: TldrScope, message: Message, bot: Bot) -> None:
         user_id = message.from_user.id if message.from_user else None
         decision = await access_control.can_use_ai_commands(user_id)
         if not decision.allowed:
@@ -129,8 +133,10 @@ def build_router(
 
         parsed = parse_command(message.text, bot_username_provider())
         args = parsed.args if parsed else ""
-        request = parse_tldr_args(args, default_lookback_hours=settings.tldr_lookback_hours)
+        lookback = parse_tldr_lookback(args, default_lookback_hours=settings.tldr_lookback_hours)
+        request = make_tldr_request(scope=scope, lookback_hours=lookback)
 
+        log_event = f"{scope}_tldr"
         try:
             async with session_scope() as session:
                 response, friendly = await tldr_service.summarize(
@@ -146,7 +152,7 @@ def build_router(
             assert response is not None
             await reply_in_same_thread(bot, message, response.text, settings.max_reply_chars)
         except OpenRouterError as exc:
-            log.error("tldr.failed", error=str(exc))
+            log.error(f"{log_event}.failed", error=str(exc))
             await reply_in_same_thread(
                 bot,
                 message,
@@ -154,13 +160,21 @@ def build_router(
                 settings.max_reply_chars,
             )
         except SQLAlchemyError as exc:
-            log.error("tldr.db_error", error=str(exc))
+            log.error(f"{log_event}.db_error", error=str(exc))
             await reply_in_same_thread(
                 bot,
                 message,
                 "I could not summarize the recent activity right now.",
                 settings.max_reply_chars,
             )
+
+    @router.message(Command("tldr", ignore_case=True))
+    async def handle_tldr(message: Message, bot: Bot) -> None:
+        await _run_tldr("thread", message, bot)
+
+    @router.message(Command("tldr_all", ignore_case=True))
+    async def handle_tldr_all(message: Message, bot: Bot) -> None:
+        await _run_tldr("all", message, bot)
 
     @router.message(Command("whitelist", ignore_case=True))
     async def handle_whitelist(message: Message, bot: Bot) -> None:

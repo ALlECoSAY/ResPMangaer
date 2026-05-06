@@ -1,0 +1,13 @@
+version: 1
+# /ai context window: how many recent messages the bot pulls into the LLM prompt.
+ai:
+  max_same_thread_messages: 80
+  max_cross_thread_messages: 30
+# /tldr — summary of ONLY the thread the command was called in.
+tldr:
+  max_threads: 1
+  max_messages_per_thread: 200
+# /tldr_all — summary of ALL threads in this chat together.
+tldr_all:
+  max_threads: 12
+  max_messages_per_thread: 120

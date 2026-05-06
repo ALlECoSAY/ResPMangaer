@@ -13,6 +13,7 @@ from app.db.repositories import (
     fetch_recent_same_thread,
     get_thread_titles,
 )
+from app.llm.runtime_config import RuntimeContextConfig
 
 DECISION_KEYWORDS = (
     "decided",
@@ -83,8 +84,13 @@ def _trim_to_budget(text: str, budget: int) -> str:
 
 
 class ContextBuilder:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        runtime_config: RuntimeContextConfig,
+    ) -> None:
         self._settings = settings
+        self._runtime_config = runtime_config
 
     async def build_for_ai(
         self,
@@ -93,17 +99,20 @@ class ContextBuilder:
         message_thread_id: int,
         question: str,
     ) -> BuiltContext:
+        max_same = self._runtime_config.ai_max_same_thread_messages
+        max_cross = self._runtime_config.ai_max_cross_thread_messages
+
         same_rows = await fetch_recent_same_thread(
             session,
             chat_id=chat_id,
             message_thread_id=message_thread_id,
-            limit=self._settings.max_same_thread_messages,
+            limit=max_same,
         )
         cross_rows = await fetch_recent_cross_thread(
             session,
             chat_id=chat_id,
             exclude_thread_id=message_thread_id,
-            limit=self._settings.max_cross_thread_messages * 4,
+            limit=max_cross * 4,
         )
 
         same_msgs = [_to_context_message(r) for r in reversed(same_rows)]
@@ -135,7 +144,7 @@ class ContextBuilder:
             m.score = score
 
         cross_candidates.sort(key=lambda m: (m.score, m.timestamp), reverse=True)
-        cross_top = cross_candidates[: self._settings.max_cross_thread_messages]
+        cross_top = cross_candidates[:max_cross]
         cross_top.sort(key=lambda m: m.timestamp)
 
         same_block = _format_block(same_msgs)

@@ -58,7 +58,8 @@ async def configure_bot(
     if settings.telegram_enable_command_registration:
         public_commands = [
             BotCommand(command="ai", description="Ask the AI using current thread context."),
-            BotCommand(command="tldr", description="Summarize recent activity in other threads."),
+            BotCommand(command="tldr", description="Summarize recent activity in the current thread."),
+            BotCommand(command="tldr_all", description="Summarize recent activity across all threads."),
         ]
         if settings.telegram_register_admin_commands:
             public_commands.append(

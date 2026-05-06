@@ -32,6 +32,11 @@ def test_parse_whitelist():
     assert p is not None and p.command == "whitelist" and p.args == ""
 
 
+def test_parse_tldr_all():
+    p = parse_command("/tldr_all 6h")
+    assert p is not None and p.command == "tldr_all" and p.args == "6h"
+
+
 def test_parse_no_slash():
     assert parse_command("hello /ai") is None
 
