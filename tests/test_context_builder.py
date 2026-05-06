@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
+
+from app.config import Settings
+from app.llm.context_builder import ContextBuilder
+
+
+def _row(thread_id: int, when: datetime, body: str, sender: str = "alice"):
+    return SimpleNamespace(
+        chat_id=1,
+        message_thread_id=thread_id,
+        telegram_date=when,
+        clean_text=body,
+        text=body,
+        caption=None,
+        sender_display_name=sender,
+    )
+
+
+class _StubSession:
+    def __init__(self, same, cross, titles):
+        self.same = same
+        self.cross = cross
+        self.titles = titles
+
+
+@pytest.fixture
+def patched_repo(monkeypatch):
+    state: dict = {}
+
+    async def _same(session, *, chat_id, message_thread_id, limit):
+        return state["same"]
+
+    async def _cross(session, *, chat_id, exclude_thread_id, limit, since=None):
+        return state["cross"]
+
+    async def _titles(session, chat_id):
+        return state["titles"]
+
+    monkeypatch.setattr("app.llm.context_builder.fetch_recent_same_thread", _same)
+    monkeypatch.setattr("app.llm.context_builder.fetch_recent_cross_thread", _cross)
+    monkeypatch.setattr("app.llm.context_builder.get_thread_titles", _titles)
+    return state
+
+
+async def test_same_thread_block_ordered_chronologically(patched_repo):
+    base = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    # Repo returns newest-first.
+    patched_repo["same"] = [
+        _row(5, base, "newest"),
+        _row(5, base - timedelta(minutes=5), "older"),
+    ]
+    patched_repo["cross"] = []
+    patched_repo["titles"] = {}
+    settings = Settings(_env_file=None)
+    ctx = await ContextBuilder(settings).build_for_ai(
+        session=None, chat_id=1, message_thread_id=5, question="what?"
+    )
+    assert "older" in ctx.context_text
+    assert ctx.context_text.index("older") < ctx.context_text.index("newest")
+
+
+async def test_cross_thread_capped(patched_repo):
+    base = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    patched_repo["same"] = []
+    patched_repo["cross"] = [
+        _row(t, base - timedelta(minutes=t), f"msg{t}") for t in range(1, 200)
+    ]
+    patched_repo["titles"] = {}
+    settings = Settings(_env_file=None, MAX_CROSS_THREAD_MESSAGES=5)
+    ctx = await ContextBuilder(settings).build_for_ai(
+        session=None, chat_id=1, message_thread_id=999, question="msg"
+    )
+    assert len(ctx.cross_thread_messages) == 5
+
+
+async def test_context_respects_char_budget(patched_repo):
+    base = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    patched_repo["same"] = [
+        _row(5, base - timedelta(seconds=i), "x" * 200) for i in range(100)
+    ]
+    patched_repo["cross"] = []
+    patched_repo["titles"] = {}
+    settings = Settings(_env_file=None, MAX_CONTEXT_CHARS=1000)
+    ctx = await ContextBuilder(settings).build_for_ai(
+        session=None, chat_id=1, message_thread_id=5, question="hi"
+    )
+    assert len(ctx.context_text) <= 1500  # budget + small headers
