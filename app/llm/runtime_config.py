@@ -14,25 +14,52 @@ log = get_logger(__name__)
 
 @dataclass(frozen=True)
 class _Limits:
+    bot_language: str
+    max_context_chars: int
+    max_reply_chars: int
     ai_max_same_thread_messages: int
     ai_max_cross_thread_messages: int
+    tldr_activity_gap_minutes: int
+    tldr_lookback_hours: int
     tldr_max_threads: int
     tldr_max_messages_per_thread: int
     tldr_all_max_threads: int
     tldr_all_max_messages_per_thread: int
 
 
+_DEFAULTS = _Limits(
+    bot_language="auto",
+    max_context_chars=24_000,
+    max_reply_chars=3_900,
+    ai_max_same_thread_messages=80,
+    ai_max_cross_thread_messages=30,
+    tldr_activity_gap_minutes=180,
+    tldr_lookback_hours=48,
+    tldr_max_threads=1,
+    tldr_max_messages_per_thread=200,
+    tldr_all_max_threads=12,
+    tldr_all_max_messages_per_thread=120,
+)
+
+
 class RuntimeContextConfig:
-    """Hot-reloadable YAML config for /ai, /tldr and /tldr_all context limits.
+    """Hot-reloadable YAML config for bot runtime behavior.
 
     Re-reads the file when its mtime changes, so edits take effect without restart.
     Layout:
 
         version: 1
+        bot:
+          language: auto
+          max_reply_chars: 3900
+        context:
+          max_chars: 24000
         ai:
           max_same_thread_messages: 80
           max_cross_thread_messages: 30
         tldr:
+          activity_gap_minutes: 180
+          lookback_hours: 48
           max_threads: 1
           max_messages_per_thread: 200
         tldr_all:
@@ -43,27 +70,25 @@ class RuntimeContextConfig:
     def __init__(
         self,
         path: Path,
-        *,
-        default_ai_same_thread: int,
-        default_ai_cross_thread: int,
-        default_tldr_max_threads: int,
-        default_tldr_max_messages_per_thread: int,
-        default_tldr_all_max_threads: int,
-        default_tldr_all_max_messages_per_thread: int,
     ) -> None:
         self._path = path
-        self._defaults = _Limits(
-            ai_max_same_thread_messages=default_ai_same_thread,
-            ai_max_cross_thread_messages=default_ai_cross_thread,
-            tldr_max_threads=default_tldr_max_threads,
-            tldr_max_messages_per_thread=default_tldr_max_messages_per_thread,
-            tldr_all_max_threads=default_tldr_all_max_threads,
-            tldr_all_max_messages_per_thread=default_tldr_all_max_messages_per_thread,
-        )
+        self._defaults = _DEFAULTS
         self._lock = threading.Lock()
         self._cached_mtime: float | None = None
         self._limits = self._defaults
         self._missing_logged = False
+
+    @property
+    def bot_language(self) -> str:
+        return self._current().bot_language
+
+    @property
+    def max_context_chars(self) -> int:
+        return self._current().max_context_chars
+
+    @property
+    def max_reply_chars(self) -> int:
+        return self._current().max_reply_chars
 
     @property
     def ai_max_same_thread_messages(self) -> int:
@@ -72,6 +97,14 @@ class RuntimeContextConfig:
     @property
     def ai_max_cross_thread_messages(self) -> int:
         return self._current().ai_max_cross_thread_messages
+
+    @property
+    def tldr_activity_gap_minutes(self) -> int:
+        return self._current().tldr_activity_gap_minutes
+
+    @property
+    def tldr_lookback_hours(self) -> int:
+        return self._current().tldr_lookback_hours
 
     @property
     def tldr_max_threads(self) -> int:
@@ -122,11 +155,28 @@ class RuntimeContextConfig:
             )
             return
 
+        bot_section = self._section(data, "bot")
+        context_section = self._section(data, "context")
         ai_section = self._section(data, "ai")
         tldr_section = self._section(data, "tldr")
         tldr_all_section = self._section(data, "tldr_all")
 
         limits = _Limits(
+            bot_language=self._coerce_non_empty_str(
+                bot_section.get("language"),
+                self._defaults.bot_language,
+            ),
+            max_context_chars=self._coerce_positive_int(
+                self._first_present(
+                    context_section.get("max_chars"),
+                    ai_section.get("max_context_chars"),
+                ),
+                self._defaults.max_context_chars,
+            ),
+            max_reply_chars=self._coerce_positive_int(
+                bot_section.get("max_reply_chars"),
+                self._defaults.max_reply_chars,
+            ),
             ai_max_same_thread_messages=self._coerce_positive_int(
                 ai_section.get("max_same_thread_messages"),
                 self._defaults.ai_max_same_thread_messages,
@@ -134,6 +184,14 @@ class RuntimeContextConfig:
             ai_max_cross_thread_messages=self._coerce_positive_int(
                 ai_section.get("max_cross_thread_messages"),
                 self._defaults.ai_max_cross_thread_messages,
+            ),
+            tldr_activity_gap_minutes=self._coerce_positive_int(
+                tldr_section.get("activity_gap_minutes"),
+                self._defaults.tldr_activity_gap_minutes,
+            ),
+            tldr_lookback_hours=self._coerce_positive_int(
+                tldr_section.get("lookback_hours"),
+                self._defaults.tldr_lookback_hours,
             ),
             tldr_max_threads=self._coerce_positive_int(
                 tldr_section.get("max_threads"),
@@ -161,8 +219,13 @@ class RuntimeContextConfig:
         log.info(
             "runtime_context_config.reloaded",
             path=str(self._path),
+            bot_language=limits.bot_language,
+            max_context_chars=limits.max_context_chars,
+            max_reply_chars=limits.max_reply_chars,
             ai_same=limits.ai_max_same_thread_messages,
             ai_cross=limits.ai_max_cross_thread_messages,
+            tldr_gap_minutes=limits.tldr_activity_gap_minutes,
+            tldr_lookback_hours=limits.tldr_lookback_hours,
             tldr_threads=limits.tldr_max_threads,
             tldr_msgs_per_thread=limits.tldr_max_messages_per_thread,
             tldr_all_threads=limits.tldr_all_max_threads,
@@ -183,3 +246,17 @@ class RuntimeContextConfig:
         except (TypeError, ValueError):
             return default
         return n if n > 0 else default
+
+    @staticmethod
+    def _coerce_non_empty_str(value: Any, default: str) -> str:
+        if value is None:
+            return default
+        text = str(value).strip()
+        return text if text else default
+
+    @staticmethod
+    def _first_present(*values: Any) -> Any:
+        for value in values:
+            if value is not None:
+                return value
+        return None

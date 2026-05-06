@@ -43,14 +43,15 @@ Tracking implementation of `IMPLEMENTATION_PLAN.md`.
 - [x] **Ticket 8** — Context builder
   - `app/llm/context_builder.py` (same-thread first, cross-thread scored by
     keyword overlap + activity + decision keywords + recency, trimmed to
-    `MAX_CONTEXT_CHARS`).
+    `config/context_limits.yaml` `context.max_chars`).
 - [x] **Ticket 9** — `/ai` command
   - Wired in `app/bot/handlers.py` + `app/services/ai_answer_service.py`;
     access check before any LLM call; logs interactions; replies in same
     thread.
 - [x] **Ticket 10** — TLDR period detection
   - `app/services/thread_activity.py` (per-thread activity window using
-    `TLDR_ACTIVITY_GAP_MINUTES`, capped by `TLDR_MAX_MESSAGES_PER_THREAD`).
+    `config/context_limits.yaml` `tldr.activity_gap_minutes`, capped by
+    `tldr.max_messages_per_thread`).
 - [x] **Ticket 11** — `/tldr` command
   - `app/services/tldr_service.py` (`parse_tldr_args` for `all`/`thread`/
     `6h`/`24h`/`2d`; default scope = other threads; "no activity" message).
@@ -59,9 +60,10 @@ Tracking implementation of `IMPLEMENTATION_PLAN.md`.
     fallback, idempotent response, admin-only check; persists to YAML
     atomically without restart.
 - [x] **Ticket 13** — Reply formatting
-  - `app/bot/formatting.py` (`split_for_telegram` honoring `MAX_REPLY_CHARS`,
-    splitting on newline/space when possible) + `reply_in_same_thread`
-    that preserves `message_thread_id` when set.
+  - `app/bot/formatting.py` (`split_for_telegram` honoring
+    `config/context_limits.yaml` `bot.max_reply_chars`, splitting on
+    newline/space when possible) + `reply_in_same_thread` that preserves
+    `message_thread_id` when set.
 - [x] **Ticket 14** — Tests
   - `tests/test_command_parsing.py` (8 cases)
   - `tests/test_access_control.py` (8 cases incl. atomic-write/idempotency)
@@ -98,8 +100,11 @@ cp .env.example .env
 mkdir -p config
 cp config/admins.yaml.example config/admins.yaml
 cp config/whitelist.yaml.example config/whitelist.yaml
+cp config/context_limits.yaml.example config/context_limits.yaml
+cp config/reactions.yaml.example config/reactions.yaml
 # fill in TELEGRAM_BOT_TOKEN, OPENROUTER_API_KEY,
-# put your numeric Telegram user id into config/admins.yaml
+# put your numeric Telegram user id into config/admins.yaml,
+# tune bot behavior in config/context_limits.yaml
 docker compose up -d --build
 docker compose exec bot alembic upgrade head
 docker compose logs -f bot

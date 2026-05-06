@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     telegram_enable_command_registration: bool = True
     telegram_register_admin_commands: bool = False
 
-    # Access control
+    # YAML configs
     access_control_enabled: bool = True
     whitelist_yaml_path: Path = Path("/app/config/whitelist.yaml")
     admins_yaml_path: Path = Path("/app/config/admins.yaml")
@@ -42,21 +42,6 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://telegram_ai_bot:telegram_ai_bot_password@postgres:5432/telegram_ai_bot"
     )
-
-    # Bot behavior
-    bot_language: str = "auto"
-    max_same_thread_messages: int = 80
-    max_cross_thread_messages: int = 30
-    max_context_chars: int = 24_000
-    max_reply_chars: int = 3_900
-    tldr_activity_gap_minutes: int = 180
-    tldr_lookback_hours: int = 48
-    # /tldr — current thread only.
-    tldr_max_threads: int = 1
-    tldr_max_messages_per_thread: int = 200
-    # /tldr_all — all threads in the chat.
-    tldr_all_max_threads: int = 12
-    tldr_all_max_messages_per_thread: int = 120
 
     # Safety / privacy
     store_bot_messages: bool = True

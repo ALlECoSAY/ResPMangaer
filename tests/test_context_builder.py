@@ -6,22 +6,31 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.config import Settings
 from app.llm.context_builder import ContextBuilder
 from app.llm.runtime_config import RuntimeContextConfig
 
 
-def _builder(settings: Settings) -> ContextBuilder:
-    runtime_config = RuntimeContextConfig(
-        path=Path("/nonexistent/context_limits.yaml"),
-        default_ai_same_thread=settings.max_same_thread_messages,
-        default_ai_cross_thread=settings.max_cross_thread_messages,
-        default_tldr_max_threads=settings.tldr_max_threads,
-        default_tldr_max_messages_per_thread=settings.tldr_max_messages_per_thread,
-        default_tldr_all_max_threads=settings.tldr_all_max_threads,
-        default_tldr_all_max_messages_per_thread=settings.tldr_all_max_messages_per_thread,
+def _builder(path: Path = Path("/nonexistent/context_limits.yaml")) -> ContextBuilder:
+    return ContextBuilder(RuntimeContextConfig(path=path))
+
+
+def _write_runtime_config(
+    path: Path,
+    *,
+    max_cross_thread_messages: int = 30,
+    max_context_chars: int = 24_000,
+) -> None:
+    path.write_text(
+        f"""
+        version: 1
+        context:
+          max_chars: {max_context_chars}
+        ai:
+          max_same_thread_messages: 80
+          max_cross_thread_messages: {max_cross_thread_messages}
+        """,
+        encoding="utf-8",
     )
-    return ContextBuilder(settings, runtime_config)
 
 
 def _row(thread_id: int, when: datetime, body: str, sender: str = "alice"):
@@ -71,37 +80,38 @@ async def test_same_thread_block_ordered_chronologically(patched_repo):
     ]
     patched_repo["cross"] = []
     patched_repo["titles"] = {}
-    settings = Settings(_env_file=None)
-    ctx = await _builder(settings).build_for_ai(
+    ctx = await _builder().build_for_ai(
         session=None, chat_id=1, message_thread_id=5, question="what?"
     )
     assert "older" in ctx.context_text
     assert ctx.context_text.index("older") < ctx.context_text.index("newest")
 
 
-async def test_cross_thread_capped(patched_repo):
+async def test_cross_thread_capped(patched_repo, tmp_path: Path):
     base = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
     patched_repo["same"] = []
     patched_repo["cross"] = [
         _row(t, base - timedelta(minutes=t), f"msg{t}") for t in range(1, 200)
     ]
     patched_repo["titles"] = {}
-    settings = Settings(_env_file=None, max_cross_thread_messages=5)
-    ctx = await _builder(settings).build_for_ai(
+    config_path = tmp_path / "context_limits.yaml"
+    _write_runtime_config(config_path, max_cross_thread_messages=5)
+    ctx = await _builder(config_path).build_for_ai(
         session=None, chat_id=1, message_thread_id=999, question="msg"
     )
     assert len(ctx.cross_thread_messages) == 5
 
 
-async def test_context_respects_char_budget(patched_repo):
+async def test_context_respects_char_budget(patched_repo, tmp_path: Path):
     base = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
     patched_repo["same"] = [
         _row(5, base - timedelta(seconds=i), "x" * 200) for i in range(100)
     ]
     patched_repo["cross"] = []
     patched_repo["titles"] = {}
-    settings = Settings(_env_file=None, max_context_chars=1000)
-    ctx = await _builder(settings).build_for_ai(
+    config_path = tmp_path / "context_limits.yaml"
+    _write_runtime_config(config_path, max_context_chars=1000)
+    ctx = await _builder(config_path).build_for_ai(
         session=None, chat_id=1, message_thread_id=5, question="hi"
     )
     assert len(ctx.context_text) <= 1500  # budget + small headers

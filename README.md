@@ -13,10 +13,16 @@ cp .env.example .env
 mkdir -p config
 cp config/admins.yaml.example config/admins.yaml
 cp config/whitelist.yaml.example config/whitelist.yaml
-# edit .env and the YAML files (add your own Telegram user ID to admins)
+cp config/context_limits.yaml.example config/context_limits.yaml
+cp config/reactions.yaml.example config/reactions.yaml
+# edit .env for secrets/paths; edit YAML files for access control and bot behavior
 docker compose up -d --build
 docker compose logs -f bot
 ```
+
+Bot behavior such as reply size, context budget, `/ai` message caps, and `/tldr`
+lookback/gap limits lives in `config/context_limits.yaml`. Keep `.env` for
+secrets, connection strings, feature flags, and YAML file paths.
 
 ## Commands
 

@@ -140,10 +140,12 @@ TELEGRAM_ALLOWED_CHAT_IDS=
 TELEGRAM_ENABLE_COMMAND_REGISTRATION=true
 TELEGRAM_REGISTER_ADMIN_COMMANDS=false
 
-# YAML access control
+# YAML configs
 ACCESS_CONTROL_ENABLED=true
 WHITELIST_YAML_PATH=/app/config/whitelist.yaml
 ADMINS_YAML_PATH=/app/config/admins.yaml
+CONTEXT_LIMITS_YAML_PATH=/app/config/context_limits.yaml
+REACTIONS_YAML_PATH=/app/config/reactions.yaml
 
 # OpenRouter
 OPENROUTER_API_KEY=replace_me
@@ -158,17 +160,6 @@ POSTGRES_USER=telegram_ai_bot
 POSTGRES_PASSWORD=telegram_ai_bot_password
 DATABASE_URL=postgresql+asyncpg://telegram_ai_bot:telegram_ai_bot_password@postgres:5432/telegram_ai_bot
 
-# Bot behavior
-BOT_LANGUAGE=auto
-MAX_SAME_THREAD_MESSAGES=80
-MAX_CROSS_THREAD_MESSAGES=30
-MAX_CONTEXT_CHARS=24000
-MAX_REPLY_CHARS=3900
-TLDR_ACTIVITY_GAP_MINUTES=180
-TLDR_LOOKBACK_HOURS=48
-TLDR_MAX_THREADS=12
-TLDR_MAX_MESSAGES_PER_THREAD=120
-
 # Safety / privacy
 STORE_BOT_MESSAGES=true
 STORE_COMMAND_MESSAGES=true
@@ -182,9 +173,9 @@ Notes:
 
 - `TELEGRAM_ALLOWED_CHAT_IDS` is a comma-separated chat allowlist. Empty means all chats are allowed during local development. For production, require this to be set.
 - `ACCESS_CONTROL_ENABLED=true` means only users listed in `whitelist.yaml` or `admins.yaml` can run `/ai` and `/tldr`.
-- `WHITELIST_YAML_PATH` and `ADMINS_YAML_PATH` point to writable YAML files mounted into the container.
+- `WHITELIST_YAML_PATH`, `ADMINS_YAML_PATH`, `CONTEXT_LIMITS_YAML_PATH`, and `REACTIONS_YAML_PATH` point to writable YAML files mounted into the container.
 - `TELEGRAM_REGISTER_ADMIN_COMMANDS=false` keeps `/add_whitelist` out of the public command menu by default. The handler still works.
-- Keep replies below Telegram's practical message length limit. Use `MAX_REPLY_CHARS=3900` to leave formatting headroom.
+- Keep bot behavior in `config/context_limits.yaml`; for example, use `bot.max_reply_chars: 3900` to leave Telegram formatting headroom.
 - `OPENROUTER_SITE_URL` and `OPENROUTER_SITE_NAME` are optional headers for OpenRouter attribution/ranking.
 
 ---
@@ -683,8 +674,8 @@ class BuiltContext:
 
 Algorithm:
 
-1. Fetch last `MAX_SAME_THREAD_MESSAGES` from the same thread.
-2. Fetch last `MAX_CROSS_THREAD_MESSAGES` from other threads in the same chat.
+1. Fetch last `ai.max_same_thread_messages` from the same thread.
+2. Fetch last `ai.max_cross_thread_messages` from other threads in the same chat.
 3. Score cross-thread messages:
    - +3 if keyword overlap with question;
    - +2 if from active thread in last 24h;
@@ -692,7 +683,7 @@ Algorithm:
    - recency multiplier.
 4. Sort cross-thread messages by score, then recency.
 5. Render context into a compact plain-text format.
-6. Trim oldest/lowest-score content until `MAX_CONTEXT_CHARS` is respected.
+6. Trim oldest/lowest-score content until `context.max_chars` is respected.
 
 Context format:
 
@@ -741,11 +732,11 @@ Options:
 
 For each thread:
 
-1. Look back up to `TLDR_LOOKBACK_HOURS`, default `48`.
+1. Look back up to `tldr.lookback_hours`, default `48`.
 2. Sort messages newest to oldest.
-3. Walk backward until the gap between two adjacent messages is greater than `TLDR_ACTIVITY_GAP_MINUTES`, default `180`.
+3. Walk backward until the gap between two adjacent messages is greater than `tldr.activity_gap_minutes`, default `180`.
 4. Use that contiguous recent activity block.
-5. Cap at `TLDR_MAX_MESSAGES_PER_THREAD`.
+5. Cap at `tldr.max_messages_per_thread`.
 
 This avoids summarizing ancient messages just because the thread exists.
 
@@ -907,7 +898,7 @@ File: `app/bot/formatting.py`
 
 Rules:
 
-- Telegram messages have length limits. Split long responses into chunks below `MAX_REPLY_CHARS`.
+- Telegram messages have length limits. Split long responses into chunks below `bot.max_reply_chars`.
 - Prefer plain text for MVP.
 - Escape Markdown if using MarkdownV2.
 - Always reply in the source thread:
@@ -1116,7 +1107,7 @@ Do not log secrets.
 4. Context builder:
    - same-thread messages prioritized;
    - other-thread messages capped;
-   - context trimmed under `MAX_CONTEXT_CHARS`.
+   - context trimmed under `context.max_chars`.
 5. TLDR activity detection:
    - contiguous period detected;
    - gaps over threshold stop the period;
@@ -1270,7 +1261,7 @@ Acceptance criteria:
 
 - Same thread is prioritized.
 - Other threads are included only within configured limits.
-- Output is deterministic and bounded by `MAX_CONTEXT_CHARS`.
+- Output is deterministic and bounded by `context.max_chars`.
 
 ### Ticket 9 — `/ai` Command
 

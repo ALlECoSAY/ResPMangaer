@@ -42,22 +42,15 @@ async def run() -> int:
         site_url=settings.openrouter_site_url,
         site_name=settings.openrouter_site_name,
     )
-    runtime_context_config = RuntimeContextConfig(
-        path=settings.context_limits_yaml_path,
-        default_ai_same_thread=settings.max_same_thread_messages,
-        default_ai_cross_thread=settings.max_cross_thread_messages,
-        default_tldr_max_threads=settings.tldr_max_threads,
-        default_tldr_max_messages_per_thread=settings.tldr_max_messages_per_thread,
-        default_tldr_all_max_threads=settings.tldr_all_max_threads,
-        default_tldr_all_max_messages_per_thread=settings.tldr_all_max_messages_per_thread,
-    )
-    context_builder = ContextBuilder(settings, runtime_context_config)
+    runtime_context_config = RuntimeContextConfig(path=settings.context_limits_yaml_path)
+    context_builder = ContextBuilder(runtime_context_config)
     ai_service = AiAnswerService(settings, context_builder, openrouter)
     tldr_service = TldrService(settings, openrouter, runtime_context_config)
     reactions_config = RuntimeReactionsConfig(path=settings.reactions_yaml_path)
     reaction_service = ReactionService(
         settings=settings,
         config=reactions_config,
+        runtime_config=runtime_context_config,
         client=openrouter,
     )
 
@@ -68,6 +61,7 @@ async def run() -> int:
         ai_service=ai_service,
         tldr_service=tldr_service,
         reaction_service=reaction_service,
+        runtime_config=runtime_context_config,
     )
 
     log.info("startup.polling")

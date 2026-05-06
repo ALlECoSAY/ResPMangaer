@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings
 from app.db.models import TelegramMessage
 from app.db.repositories import (
     fetch_recent_cross_thread,
@@ -86,10 +85,8 @@ def _trim_to_budget(text: str, budget: int) -> str:
 class ContextBuilder:
     def __init__(
         self,
-        settings: Settings,
         runtime_config: RuntimeContextConfig,
     ) -> None:
-        self._settings = settings
         self._runtime_config = runtime_config
 
     async def build_for_ai(
@@ -164,7 +161,7 @@ class ContextBuilder:
 
         cross_block = "\n".join(line for line in cross_lines if line)
 
-        budget = self._settings.max_context_chars
+        budget = self._runtime_config.max_context_chars
         same_budget = max(budget // 2, budget - len(cross_block) - 200)
         same_block = _trim_to_budget(same_block, same_budget)
         remaining = max(0, budget - len(same_block) - 200)

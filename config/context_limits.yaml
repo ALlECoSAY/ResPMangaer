@@ -1,8 +1,15 @@
 version: 1
+bot:
+  language: auto
+  max_reply_chars: 3900
+context:
+  max_chars: 12000
 ai:
-  max_same_thread_messages: 80
+  max_same_thread_messages: 200
   max_cross_thread_messages: 30
 tldr:
+  activity_gap_minutes: 180
+  lookback_hours: 48
   max_threads: 1
   max_messages_per_thread: 200
 tldr_all:

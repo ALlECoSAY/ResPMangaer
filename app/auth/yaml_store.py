@@ -111,11 +111,7 @@ class YamlAccessStore:
             return set()
         ids: set[int] = set()
         for entry in items:
-            value: Any
-            if isinstance(entry, dict):
-                value = entry.get("id")
-            else:
-                value = entry
+            value: Any = entry.get("id") if isinstance(entry, dict) else entry
             try:
                 ids.add(int(value))
             except (TypeError, ValueError):

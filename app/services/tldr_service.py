@@ -125,15 +125,16 @@ class TldrService:
         thread_titles = await get_thread_titles(session, chat_id)
         activities = detect_activity_periods(
             messages,
-            activity_gap_minutes=self._settings.tldr_activity_gap_minutes,
+            activity_gap_minutes=self._runtime_config.tldr_activity_gap_minutes,
             max_messages_per_thread=max_messages_per_thread,
             thread_titles=thread_titles,
         )
         context_text = _format_activity(activities, max_threads)
         # Trim to max_context_chars budget.
-        if len(context_text) > self._settings.max_context_chars:
+        max_context_chars = self._runtime_config.max_context_chars
+        if len(context_text) > max_context_chars:
             lines = context_text.split("\n")
-            while lines and sum(len(line) + 1 for line in lines) > self._settings.max_context_chars:
+            while lines and sum(len(line) + 1 for line in lines) > max_context_chars:
                 lines.pop(0)
             context_text = "\n".join(lines)
 

@@ -43,6 +43,10 @@ class _FakeReactionsConfig:
         return emoji in self.trigger_emojis
 
 
+class _FakeRuntimeConfig:
+    max_reply_chars = 4000
+
+
 class _FakeOpenRouter:
     def __init__(self, response_text: str = "Heh, fair point.") -> None:
         self._response_text = response_text
@@ -207,13 +211,14 @@ def _make_service(
     config: _FakeReactionsConfig,
     rng_value: float = 0.0,
 ) -> tuple[ReactionService, _FakeOpenRouter]:
-    settings = Settings(_env_file=None, max_reply_chars=4000)
+    settings = Settings(_env_file=None)
     rng = random.Random()
     rng.random = lambda: rng_value  # type: ignore[method-assign]
     client = _FakeOpenRouter()
     svc = ReactionService(
         settings=settings,
         config=config,  # type: ignore[arg-type]
+        runtime_config=_FakeRuntimeConfig(),  # type: ignore[arg-type]
         client=client,  # type: ignore[arg-type]
         rng=rng,
     )

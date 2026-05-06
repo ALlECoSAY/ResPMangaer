@@ -25,6 +25,7 @@ from app.db.repositories import (
 )
 from app.llm.openrouter_client import LlmResponse, OpenRouterClient, OpenRouterError
 from app.llm.reactions_config import RuntimeReactionsConfig
+from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
 
 log = get_logger(__name__)
@@ -117,11 +118,13 @@ class ReactionService:
         self,
         settings: Settings,
         config: RuntimeReactionsConfig,
+        runtime_config: RuntimeContextConfig,
         client: OpenRouterClient,
         rng: random.Random | None = None,
     ) -> None:
         self._settings = settings
         self._config = config
+        self._runtime_config = runtime_config
         self._client = client
         self._rng = rng or random.Random()
         # In-memory cooldown — cleared on restart, which is fine for
@@ -336,7 +339,7 @@ class ReactionService:
         target_message_id: int,
         text: str,
     ) -> None:
-        chunks = split_for_telegram(text, self._settings.max_reply_chars)
+        chunks = split_for_telegram(text, self._runtime_config.max_reply_chars)
         for index, chunk in enumerate(chunks):
             kwargs: dict = {"chat_id": chat_id, "text": chunk}
             if message_thread_id:

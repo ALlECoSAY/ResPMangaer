@@ -1,10 +1,22 @@
 version: 1
+bot:
+  # Preferred bot language. "auto" keeps language selection prompt-driven.
+  language: auto
+  # Telegram has a hard message-size limit; keep a little formatting headroom.
+  max_reply_chars: 3900
+context:
+  # Shared LLM context budget for /ai and /tldr prompts.
+  max_chars: 24000
 # /ai context window: how many recent messages the bot pulls into the LLM prompt.
 ai:
   max_same_thread_messages: 80
   max_cross_thread_messages: 30
 # /tldr — summary of ONLY the thread the command was called in.
 tldr:
+  # A gap larger than this starts a separate activity period.
+  activity_gap_minutes: 180
+  # Default lookback when /tldr is called without an explicit 6h/2d-style arg.
+  lookback_hours: 48
   max_threads: 1
   max_messages_per_thread: 200
 # /tldr_all — summary of ALL threads in this chat together.

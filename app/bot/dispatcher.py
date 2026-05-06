@@ -9,6 +9,7 @@ from app.auth.yaml_store import YamlAccessStore
 from app.bot.handlers import build_router
 from app.bot.middleware import ChatAllowlistMiddleware, MessageIngestionMiddleware
 from app.config import Settings
+from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
 from app.services.ai_answer_service import AiAnswerService
 from app.services.reaction_service import ReactionService
@@ -32,6 +33,7 @@ async def configure_bot(
     ai_service: AiAnswerService,
     tldr_service: TldrService,
     reaction_service: ReactionService,
+    runtime_config: RuntimeContextConfig,
 ) -> tuple[Bot, Dispatcher, BotState]:
     bot = Bot(
         token=settings.telegram_bot_token,
@@ -54,6 +56,7 @@ async def configure_bot(
         ai_service=ai_service,
         tldr_service=tldr_service,
         reaction_service=reaction_service,
+        runtime_config=runtime_config,
         bot_username_provider=state.get_username,
     )
     dp.include_router(router)
