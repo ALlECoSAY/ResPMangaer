@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     whitelist_yaml_path: Path = Path("/app/config/whitelist.yaml")
     admins_yaml_path: Path = Path("/app/config/admins.yaml")
     context_limits_yaml_path: Path = Path("/app/config/context_limits.yaml")
+    reactions_yaml_path: Path = Path("/app/config/reactions.yaml")
 
     # OpenRouter
     openrouter_api_key: str = Field(default="")

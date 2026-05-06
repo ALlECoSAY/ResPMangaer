@@ -11,6 +11,7 @@ from app.bot.middleware import ChatAllowlistMiddleware, MessageIngestionMiddlewa
 from app.config import Settings
 from app.logging_config import get_logger
 from app.services.ai_answer_service import AiAnswerService
+from app.services.reaction_service import ReactionService
 from app.services.tldr_service import TldrService
 
 log = get_logger(__name__)
@@ -30,6 +31,7 @@ async def configure_bot(
     yaml_store: YamlAccessStore,
     ai_service: AiAnswerService,
     tldr_service: TldrService,
+    reaction_service: ReactionService,
 ) -> tuple[Bot, Dispatcher, BotState]:
     bot = Bot(
         token=settings.telegram_bot_token,
@@ -51,6 +53,7 @@ async def configure_bot(
         yaml_store=yaml_store,
         ai_service=ai_service,
         tldr_service=tldr_service,
+        reaction_service=reaction_service,
         bot_username_provider=state.get_username,
     )
     dp.include_router(router)

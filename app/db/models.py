@@ -140,6 +140,39 @@ class TelegramMessage(Base):
     sender: Mapped[TelegramUser | None] = relationship(lazy="noload")
 
 
+class TelegramMessageReaction(Base):
+    __tablename__ = "telegram_message_reactions"
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_id",
+            "message_id",
+            "user_id",
+            "emoji",
+            name="uq_reaction_unique",
+        ),
+        Index("idx_reaction_chat_msg", "chat_id", "message_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_chats.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    emoji: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class LlmInteraction(Base):
     __tablename__ = "llm_interactions"
 

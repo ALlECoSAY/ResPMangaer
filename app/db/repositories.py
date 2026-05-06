@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,7 @@ from app.db.models import (
     LlmInteraction,
     TelegramChat,
     TelegramMessage,
+    TelegramMessageReaction,
     TelegramThread,
     TelegramUser,
 )
@@ -224,6 +225,148 @@ async def get_thread_titles(
     )
     result = await session.execute(stmt)
     return {int(row[0]): row[1] for row in result.all()}
+
+
+async def replace_user_reactions(
+    session: AsyncSession,
+    chat_id: int,
+    message_id: int,
+    user_id: int,
+    new_emojis: list[str],
+) -> None:
+    """Replace the set of reactions a single user has on one message.
+
+    Telegram delivers ``MessageReactionUpdated`` with the user's full new set;
+    we mirror that in the DB by deleting their previous rows and inserting
+    fresh ones.
+    """
+    await session.execute(
+        delete(TelegramMessageReaction).where(
+            and_(
+                TelegramMessageReaction.chat_id == chat_id,
+                TelegramMessageReaction.message_id == message_id,
+                TelegramMessageReaction.user_id == user_id,
+            )
+        )
+    )
+    if not new_emojis:
+        return
+    rows = [
+        {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "user_id": user_id,
+            "emoji": emoji,
+        }
+        for emoji in new_emojis
+    ]
+    stmt = pg_insert(TelegramMessageReaction).values(rows)
+    stmt = stmt.on_conflict_do_nothing(
+        index_elements=[
+            TelegramMessageReaction.chat_id,
+            TelegramMessageReaction.message_id,
+            TelegramMessageReaction.user_id,
+            TelegramMessageReaction.emoji,
+        ]
+    )
+    await session.execute(stmt)
+
+
+async def count_distinct_reaction_users(
+    session: AsyncSession,
+    chat_id: int,
+    message_id: int,
+    only_emojis: list[str] | None = None,
+) -> int:
+    stmt = select(func.count(func.distinct(TelegramMessageReaction.user_id))).where(
+        TelegramMessageReaction.chat_id == chat_id,
+        TelegramMessageReaction.message_id == message_id,
+    )
+    if only_emojis:
+        stmt = stmt.where(TelegramMessageReaction.emoji.in_(only_emojis))
+    result = await session.execute(stmt)
+    return int(result.scalar_one() or 0)
+
+
+async def fetch_message_by_chat_message_id(
+    session: AsyncSession,
+    chat_id: int,
+    message_id: int,
+) -> TelegramMessage | None:
+    stmt = select(TelegramMessage).where(
+        TelegramMessage.chat_id == chat_id,
+        TelegramMessage.message_id == message_id,
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def fetch_messages_around(
+    session: AsyncSession,
+    chat_id: int,
+    message_thread_id: int,
+    target_telegram_date: datetime,
+    target_message_id: int,
+    before: int,
+    after: int,
+) -> tuple[list[TelegramMessage], list[TelegramMessage]]:
+    """Fetch ``before`` messages prior to and ``after`` messages following the
+    target message in the same chat+thread.
+
+    Ordering uses (telegram_date, message_id) so duplicates on the second
+    boundary are stable. The returned lists are in chronological order.
+    """
+    before_rows: list[TelegramMessage] = []
+    if before > 0:
+        stmt = (
+            select(TelegramMessage)
+            .where(
+                TelegramMessage.chat_id == chat_id,
+                TelegramMessage.message_thread_id == message_thread_id,
+                TelegramMessage.message_id != target_message_id,
+            )
+            .where(
+                (TelegramMessage.telegram_date < target_telegram_date)
+                | (
+                    (TelegramMessage.telegram_date == target_telegram_date)
+                    & (TelegramMessage.message_id < target_message_id)
+                )
+            )
+            .order_by(
+                TelegramMessage.telegram_date.desc(),
+                TelegramMessage.message_id.desc(),
+            )
+            .limit(before)
+        )
+        result = await session.execute(stmt)
+        before_rows = list(reversed(result.scalars().all()))
+
+    after_rows: list[TelegramMessage] = []
+    if after > 0:
+        stmt = (
+            select(TelegramMessage)
+            .where(
+                TelegramMessage.chat_id == chat_id,
+                TelegramMessage.message_thread_id == message_thread_id,
+                TelegramMessage.message_id != target_message_id,
+            )
+            .where(
+                (TelegramMessage.telegram_date > target_telegram_date)
+                | (
+                    (TelegramMessage.telegram_date == target_telegram_date)
+                    & (TelegramMessage.message_id > target_message_id)
+                )
+            )
+            .order_by(
+                TelegramMessage.telegram_date.asc(),
+                TelegramMessage.message_id.asc(),
+            )
+            .limit(after)
+        )
+        result = await session.execute(stmt)
+        after_rows = list(result.scalars().all())
+
+    return before_rows, after_rows
 
 
 async def record_llm_interaction(

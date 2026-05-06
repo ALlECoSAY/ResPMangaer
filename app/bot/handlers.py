@@ -8,6 +8,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    MessageReactionUpdated,
 )
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -20,6 +21,7 @@ from app.db.session import session_scope
 from app.llm.openrouter_client import OpenRouterError
 from app.logging_config import get_logger
 from app.services.ai_answer_service import AiAnswerService
+from app.services.reaction_service import ReactionService
 from app.services.tldr_service import (
     TldrScope,
     TldrService,
@@ -51,9 +53,26 @@ def build_router(
     yaml_store: YamlAccessStore,
     ai_service: AiAnswerService,
     tldr_service: TldrService,
+    reaction_service: ReactionService,
     bot_username_provider,
 ) -> Router:
     router = Router(name="commands")
+
+    @router.message_reaction()
+    async def handle_message_reaction(event: MessageReactionUpdated, bot: Bot) -> None:
+        if settings.allowed_chat_ids and event.chat.id not in settings.allowed_chat_ids:
+            return
+        try:
+            async with session_scope() as session:
+                await reaction_service.handle_reaction_update(
+                    session=session,
+                    bot=bot,
+                    event=event,
+                )
+        except SQLAlchemyError as exc:
+            log.error("reactions.db_error", error=str(exc))
+        except Exception as exc:  # don't let reaction handling crash polling
+            log.error("reactions.unexpected", error=str(exc))
 
     @router.message(Command("ai", ignore_case=True))
     async def handle_ai(message: Message, bot: Bot) -> None:

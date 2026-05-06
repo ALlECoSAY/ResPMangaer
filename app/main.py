@@ -10,9 +10,11 @@ from app.config import get_settings
 from app.db.session import dispose_engine, init_engine
 from app.llm.context_builder import ContextBuilder
 from app.llm.openrouter_client import OpenRouterClient
+from app.llm.reactions_config import RuntimeReactionsConfig
 from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import configure_logging, get_logger
 from app.services.ai_answer_service import AiAnswerService
+from app.services.reaction_service import ReactionService
 from app.services.tldr_service import TldrService
 
 
@@ -52,6 +54,12 @@ async def run() -> int:
     context_builder = ContextBuilder(settings, runtime_context_config)
     ai_service = AiAnswerService(settings, context_builder, openrouter)
     tldr_service = TldrService(settings, openrouter, runtime_context_config)
+    reactions_config = RuntimeReactionsConfig(path=settings.reactions_yaml_path)
+    reaction_service = ReactionService(
+        settings=settings,
+        config=reactions_config,
+        client=openrouter,
+    )
 
     bot, dp, _state = await configure_bot(
         settings=settings,
@@ -59,6 +67,7 @@ async def run() -> int:
         yaml_store=yaml_store,
         ai_service=ai_service,
         tldr_service=tldr_service,
+        reaction_service=reaction_service,
     )
 
     log.info("startup.polling")
