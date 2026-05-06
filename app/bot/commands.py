@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-KNOWN_COMMANDS = frozenset({"ai", "tldr", "add_whitelist"})
+KNOWN_COMMANDS = frozenset({"ai", "tldr", "whitelist"})
 
 
 @dataclass(frozen=True)

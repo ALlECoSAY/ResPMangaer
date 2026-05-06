@@ -31,13 +31,19 @@ def split_for_telegram(text: str, max_chars: int) -> list[str]:
 
 
 async def reply_in_same_thread(
-    bot: Bot, message: Message, text: str, max_chars: int
+    bot: Bot,
+    message: Message,
+    text: str,
+    max_chars: int,
+    reply_to_message_id: int | None = None,
 ) -> list[Message]:
     chunks = split_for_telegram(text, max_chars)
     sent: list[Message] = []
-    for chunk in chunks:
+    for index, chunk in enumerate(chunks):
         kwargs: dict = {"chat_id": message.chat.id, "text": chunk}
         if message.message_thread_id:
             kwargs["message_thread_id"] = message.message_thread_id
+        if index == 0 and reply_to_message_id is not None:
+            kwargs["reply_to_message_id"] = reply_to_message_id
         sent.append(await bot.send_message(**kwargs))
     return sent

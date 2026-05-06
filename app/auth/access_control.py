@@ -31,6 +31,8 @@ class AccessControl:
     async def is_whitelisted(self, user_id: int | None) -> bool:
         if user_id is None:
             return False
+        if await self.is_admin(user_id):
+            return True
         whitelisted = await self._store.get_whitelisted_user_ids()
         return user_id in whitelisted
 

@@ -62,7 +62,10 @@ async def configure_bot(
         ]
         if settings.telegram_register_admin_commands:
             public_commands.append(
-                BotCommand(command="add_whitelist", description="Admin: add a user to the whitelist.")
+                BotCommand(
+                    command="whitelist",
+                    description="Admin: reply to a user with /whitelist to add them.",
+                )
             )
         try:
             await bot.set_my_commands(public_commands)

@@ -22,4 +22,5 @@ docker compose logs -f bot
 
 - `/ai <question>` — answer using current thread context plus relevant cross-thread context.
 - `/tldr [options]` — summarize recent activity from other threads.
-- `/add_whitelist <user_id> [note]` — admin-only.
+- `/whitelist` — admin-only. Reply to a user's message with `/whitelist`; the bot
+  asks "Точно?" and the admin confirms with the 🟢 Да / 🔴 Нет buttons.

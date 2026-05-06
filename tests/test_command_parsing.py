@@ -27,9 +27,9 @@ def test_parse_strips_whitespace():
     assert p is not None and p.command == "tldr" and p.args == "24h"
 
 
-def test_parse_add_whitelist():
-    p = parse_command("/add_whitelist 123 Max")
-    assert p is not None and p.command == "add_whitelist" and p.args == "123 Max"
+def test_parse_whitelist():
+    p = parse_command("/whitelist")
+    assert p is not None and p.command == "whitelist" and p.args == ""
 
 
 def test_parse_no_slash():
