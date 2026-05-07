@@ -19,3 +19,5 @@ dist/
 htmlcov/
 .idea/
 .vscode/
+config/telegram_user.session
+config/telegram_user.session-journal
