@@ -14,3 +14,11 @@ reactions:
   user_api:
     fetch_limit_per_emoji: 200
     ignore_custom_reactions: true
+    # Poll recently ingested messages for reaction changes. Required because
+    # Telegram only push-delivers UpdateMessageReactions for messages the user
+    # account has a stake in (sent or reacted-to), so reactions on third-party
+    # messages need to be discovered by polling.
+    poll_enabled: true
+    poll_interval_seconds: 30
+    poll_window_minutes: 60
+    poll_max_messages_per_tick: 50

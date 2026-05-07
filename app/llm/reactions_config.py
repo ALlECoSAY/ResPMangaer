@@ -24,6 +24,10 @@ class _ReactionLimits:
     trigger_emojis: tuple[str, ...] = field(default_factory=tuple)
     fetch_limit_per_emoji: int = 200
     ignore_custom_reactions: bool = True
+    poll_enabled: bool = False
+    poll_interval_seconds: int = 30
+    poll_window_minutes: int = 60
+    poll_max_messages_per_tick: int = 50
 
 
 _DEFAULTS = _ReactionLimits(
@@ -37,6 +41,10 @@ _DEFAULTS = _ReactionLimits(
     trigger_emojis=(),
     fetch_limit_per_emoji=200,
     ignore_custom_reactions=True,
+    poll_enabled=False,
+    poll_interval_seconds=30,
+    poll_window_minutes=60,
+    poll_max_messages_per_tick=50,
 )
 
 
@@ -103,6 +111,22 @@ class RuntimeReactionsConfig:
     @property
     def ignore_custom_reactions(self) -> bool:
         return self._current().ignore_custom_reactions
+
+    @property
+    def poll_enabled(self) -> bool:
+        return self._current().poll_enabled
+
+    @property
+    def poll_interval_seconds(self) -> int:
+        return self._current().poll_interval_seconds
+
+    @property
+    def poll_window_minutes(self) -> int:
+        return self._current().poll_window_minutes
+
+    @property
+    def poll_max_messages_per_tick(self) -> int:
+        return self._current().poll_max_messages_per_tick
 
     def emoji_is_trigger(self, emoji: str) -> bool:
         triggers = self.trigger_emojis
@@ -181,6 +205,23 @@ class RuntimeReactionsConfig:
                     _DEFAULTS.ignore_custom_reactions,
                 )
             ),
+            poll_enabled=bool(
+                user_api_section.get(
+                    "poll_enabled", _DEFAULTS.poll_enabled
+                )
+            ),
+            poll_interval_seconds=self._coerce_positive_int(
+                user_api_section.get("poll_interval_seconds"),
+                _DEFAULTS.poll_interval_seconds,
+            ),
+            poll_window_minutes=self._coerce_positive_int(
+                user_api_section.get("poll_window_minutes"),
+                _DEFAULTS.poll_window_minutes,
+            ),
+            poll_max_messages_per_tick=self._coerce_positive_int(
+                user_api_section.get("poll_max_messages_per_tick"),
+                _DEFAULTS.poll_max_messages_per_tick,
+            ),
         )
 
         with self._lock:
@@ -201,6 +242,10 @@ class RuntimeReactionsConfig:
             trigger_emojis=list(limits.trigger_emojis),
             fetch_limit_per_emoji=limits.fetch_limit_per_emoji,
             ignore_custom_reactions=limits.ignore_custom_reactions,
+            poll_enabled=limits.poll_enabled,
+            poll_interval_seconds=limits.poll_interval_seconds,
+            poll_window_minutes=limits.poll_window_minutes,
+            poll_max_messages_per_tick=limits.poll_max_messages_per_tick,
         )
 
     @staticmethod

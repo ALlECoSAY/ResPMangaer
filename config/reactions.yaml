@@ -1,22 +1,17 @@
 version: 1
 reactions:
   enabled: true
-  # X — distinct users that must have reacted to the same message before
-  # the bot considers replying.
   min_distinct_users: 3
-  # D — probability in [0, 1] of the bot actually replying once the
-  # threshold is reached. Each new qualifying reaction rolls the dice once.
-  reply_chance: 0.3
-  # N — number of messages BEFORE the reacted message included as context.
-  context_before: 30
-  # M — number of messages AFTER the reacted message included as context.
-  context_after: 5
-  # Per-message cooldown so the bot doesn't reply to the same message twice
-  # if more reactions keep arriving.
-  cooldown_seconds: 600
-  # Emoji the bot puts on the reacted message together with the reply.
-  # Empty string disables the bot's own reaction.
+  reply_chance: 1
+  context_before: 15
+  context_after: 3
+  cooldown_seconds: 6000
   bot_emoji: "🔥"
-  # If non-empty, only reactions with these emojis are counted.
-  # Leave empty ([]) to count any emoji reaction.
   trigger_emojis: []
+  user_api:
+    fetch_limit_per_emoji: 200
+    ignore_custom_reactions: true
+    poll_enabled: true
+    poll_interval_seconds: 30
+    poll_window_minutes: 60
+    poll_max_messages_per_tick: 50

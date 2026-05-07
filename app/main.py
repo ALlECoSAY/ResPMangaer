@@ -22,6 +22,7 @@ from app.llm.reactions_config import RuntimeReactionsConfig
 from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import configure_logging, get_logger
 from app.services.ai_answer_service import AiAnswerService
+from app.services.reaction_poller import ReactionPoller
 from app.services.reaction_service import ReactionService
 from app.services.tldr_service import TldrService
 
@@ -33,6 +34,7 @@ class AppServices:
     ai_service: AiAnswerService
     tldr_service: TldrService
     reaction_service: ReactionService
+    reaction_poller: ReactionPoller
     runtime_context_config: RuntimeContextConfig
 
 
@@ -60,12 +62,18 @@ def build_services(settings: Settings) -> AppServices:
         runtime_config=runtime_context_config,
         client=openrouter,
     )
+    reaction_poller = ReactionPoller(
+        settings=settings,
+        config=reactions_config,
+        reaction_service=reaction_service,
+    )
     return AppServices(
         yaml_store=yaml_store,
         access_control=access_control,
         ai_service=ai_service,
         tldr_service=tldr_service,
         reaction_service=reaction_service,
+        reaction_poller=reaction_poller,
         runtime_context_config=runtime_context_config,
     )
 
@@ -163,9 +171,14 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
             return
 
         if settings.allowed_chat_ids and chat_id not in settings.allowed_chat_ids:
+            log.info(
+                "reactions.user_raw_update_skipped_chat",
+                chat_id=chat_id,
+                message_id=message_id,
+            )
             return
 
-        log.debug(
+        log.info(
             "reactions.user_raw_update_received",
             chat_id=chat_id,
             message_id=message_id,
@@ -204,9 +217,11 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
             )
 
     log.info("startup.user_runtime")
+    services.reaction_poller.start(client)
     try:
         await client.run_until_disconnected()
     finally:
+        await services.reaction_poller.stop()
         await client.disconnect()
     return 0
 

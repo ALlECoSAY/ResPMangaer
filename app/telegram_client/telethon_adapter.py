@@ -327,12 +327,17 @@ class TelethonUserClient(TelegramClientProtocol):
                     )
                 )
             except Exception as exc:
+                msg = str(exc)
+                # Telegram returns MSG_ID_INVALID for messages with zero
+                # reactions; treat that as an empty snapshot, not an error.
+                if "MSG_ID_INVALID" in msg or "message ID used in the peer was invalid" in msg:
+                    continue
                 log.warning(
                     "reactions.user_snapshot_fetch_failed",
                     chat_id=chat_id,
                     message_id=message_id,
                     filter=getattr(reaction_filter, "emoticon", None),
-                    error=str(exc),
+                    error=msg,
                 )
                 continue
 
@@ -370,7 +375,7 @@ class TelethonUserClient(TelegramClientProtocol):
             for user_id, emojis in emojis_by_user.items()
         ]
 
-        log.debug(
+        log.info(
             "reactions.user_snapshot_fetched",
             chat_id=chat_id,
             message_id=message_id,

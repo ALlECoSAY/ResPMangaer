@@ -401,6 +401,52 @@ async def upsert_reaction_state(
     await session.execute(stmt)
 
 
+async def fetch_messages_for_reaction_poll(
+    session: AsyncSession,
+    chat_ids: list[int] | None,
+    since: datetime,
+    stale_before: datetime,
+    limit: int,
+) -> list[tuple[int, int]]:
+    """Return ``(chat_id, message_id)`` pairs that the reaction poller should
+    refresh.
+
+    A message is a candidate if it was sent after ``since`` and either:
+
+    - has no row in ``telegram_reaction_states`` yet, OR
+    - was last evaluated before ``stale_before``.
+    """
+    state_subq = (
+        select(
+            TelegramReactionState.chat_id,
+            TelegramReactionState.message_id,
+            TelegramReactionState.last_evaluated_at,
+        )
+        .subquery()
+    )
+    stmt = (
+        select(TelegramMessage.chat_id, TelegramMessage.message_id)
+        .outerjoin(
+            state_subq,
+            and_(
+                state_subq.c.chat_id == TelegramMessage.chat_id,
+                state_subq.c.message_id == TelegramMessage.message_id,
+            ),
+        )
+        .where(TelegramMessage.telegram_date >= since)
+        .where(
+            (state_subq.c.last_evaluated_at.is_(None))
+            | (state_subq.c.last_evaluated_at < stale_before)
+        )
+        .order_by(TelegramMessage.telegram_date.desc())
+        .limit(limit)
+    )
+    if chat_ids:
+        stmt = stmt.where(TelegramMessage.chat_id.in_(chat_ids))
+    result = await session.execute(stmt)
+    return [(int(row[0]), int(row[1])) for row in result.all()]
+
+
 async def fetch_message_by_chat_message_id(
     session: AsyncSession,
     chat_id: int,

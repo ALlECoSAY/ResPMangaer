@@ -95,11 +95,19 @@ def test_user_api_section_loaded(tmp_path: Path) -> None:
           user_api:
             fetch_limit_per_emoji: 50
             ignore_custom_reactions: false
+            poll_enabled: true
+            poll_interval_seconds: 15
+            poll_window_minutes: 30
+            poll_max_messages_per_tick: 25
         """,
     )
     cfg = RuntimeReactionsConfig(path=path)
     assert cfg.fetch_limit_per_emoji == 50
     assert cfg.ignore_custom_reactions is False
+    assert cfg.poll_enabled is True
+    assert cfg.poll_interval_seconds == 15
+    assert cfg.poll_window_minutes == 30
+    assert cfg.poll_max_messages_per_tick == 25
 
 
 def test_user_api_section_defaults(tmp_path: Path) -> None:
@@ -114,6 +122,10 @@ def test_user_api_section_defaults(tmp_path: Path) -> None:
     cfg = RuntimeReactionsConfig(path=path)
     assert cfg.fetch_limit_per_emoji == 200
     assert cfg.ignore_custom_reactions is True
+    assert cfg.poll_enabled is False
+    assert cfg.poll_interval_seconds == 30
+    assert cfg.poll_window_minutes == 60
+    assert cfg.poll_max_messages_per_tick == 50
 
 
 def test_hot_reload_on_mtime_change(tmp_path: Path) -> None:

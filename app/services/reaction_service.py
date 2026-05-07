@@ -200,7 +200,7 @@ class ReactionService:
 
         roll = self._rng.random()
         if roll >= self._config.reply_chance:
-            log.debug(
+            log.info(
                 "reactions.dice_lost",
                 chat_id=chat_id,
                 message_id=message_id,
@@ -306,16 +306,23 @@ class ReactionService:
     ) -> None:
         if not self._config.enabled:
             return
+        chat_id = snapshot.chat_id
+        message_id = snapshot.message_id
+
         if not snapshot.actors and not snapshot.counts:
             log.debug(
                 "reactions.user_snapshot_empty",
-                chat_id=snapshot.chat_id,
-                message_id=snapshot.message_id,
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+            await upsert_reaction_state(
+                session,
+                chat_id=chat_id,
+                message_id=message_id,
+                last_distinct_trigger_users=0,
+                last_evaluated_at=datetime.now(UTC),
             )
             return
-
-        chat_id = snapshot.chat_id
-        message_id = snapshot.message_id
 
         rows: list[tuple[int, list[str]]] = []
         for actor in snapshot.actors:
@@ -356,7 +363,7 @@ class ReactionService:
         now = datetime.now(UTC)
 
         if distinct < self._config.min_distinct_users:
-            log.debug(
+            log.info(
                 "reactions.threshold_not_met",
                 chat_id=chat_id,
                 message_id=message_id,
@@ -373,17 +380,24 @@ class ReactionService:
             return
 
         if distinct <= previous_count:
-            log.debug(
-                "reactions.threshold_not_met",
+            log.info(
+                "reactions.threshold_unchanged",
                 chat_id=chat_id,
                 message_id=message_id,
                 distinct=distinct,
                 previous=previous_count,
             )
+            await upsert_reaction_state(
+                session,
+                chat_id=chat_id,
+                message_id=message_id,
+                last_distinct_trigger_users=distinct,
+                last_evaluated_at=now,
+            )
             return
 
         if state is not None and self._is_in_persistent_cooldown(state, now):
-            log.debug(
+            log.info(
                 "reactions.persistent_cooldown_active",
                 chat_id=chat_id,
                 message_id=message_id,
@@ -405,7 +419,7 @@ class ReactionService:
             )
             return
 
-        log.debug(
+        log.info(
             "reactions.threshold_met",
             chat_id=chat_id,
             message_id=message_id,
@@ -414,7 +428,7 @@ class ReactionService:
 
         roll = self._rng.random()
         if roll >= self._config.reply_chance:
-            log.debug(
+            log.info(
                 "reactions.dice_lost",
                 chat_id=chat_id,
                 message_id=message_id,
