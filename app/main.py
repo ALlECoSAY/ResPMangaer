@@ -14,7 +14,6 @@ from app.bot.command_handlers import (
     handle_whitelist_command,
 )
 from app.bot.commands import parse_command
-from app.bot.dispatcher import configure_bot
 from app.config import Settings, get_settings
 from app.db.session import dispose_engine, init_engine, session_scope
 from app.llm.context_builder import ContextBuilder
@@ -69,26 +68,6 @@ def build_services(settings: Settings) -> AppServices:
         reaction_service=reaction_service,
         runtime_context_config=runtime_context_config,
     )
-
-
-async def run_bot_api(settings: Settings, services: AppServices) -> int:
-    log = get_logger("app.main.bot")
-    bot, dp, _state = await configure_bot(
-        settings=settings,
-        access_control=services.access_control,
-        yaml_store=services.yaml_store,
-        ai_service=services.ai_service,
-        tldr_service=services.tldr_service,
-        reaction_service=services.reaction_service,
-        runtime_config=services.runtime_context_config,
-    )
-
-    log.info("startup.polling")
-    try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    finally:
-        await bot.session.close()
-    return 0
 
 
 async def run_user_api(settings: Settings, services: AppServices) -> int:
@@ -188,11 +167,7 @@ async def run() -> int:
     services = build_services(settings)
 
     try:
-        if settings.telegram_mode == "bot":
-            return await run_bot_api(settings, services)
-        if settings.telegram_mode == "user":
-            return await run_user_api(settings, services)
-        raise ValueError(f"Unknown TELEGRAM_MODE: {settings.telegram_mode}")
+        return await run_user_api(settings, services)
     finally:
         await dispose_engine()
 

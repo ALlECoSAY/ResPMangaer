@@ -1,6 +1,6 @@
 # Migration Progress
 
-Tracking implementation of the Telegram Bot API -> Telegram User API migration.
+Tracking implementation of the Telegram User API migration and stabilization.
 
 ## Status legend
 
@@ -25,8 +25,8 @@ Tracking implementation of the Telegram Bot API -> Telegram User API migration.
 - [x] Wave 5: added a Telethon adapter with normalized topic/thread mapping helpers.
 - [x] Wave 6: added a one-off Telegram session bootstrap tool.
 - [x] Docker login flow: added a dedicated `telegram-auth` Compose service and env-driven login-code support.
-- [x] Wave 7: split runtime by `TELEGRAM_MODE` and added Telethon `NewMessage` routing.
+- [x] Wave 7: added the Telethon runtime and `NewMessage` routing.
 - [x] Wave 8: refactored reactions onto the shared transport layer and documented that user-mode reactions are currently disabled.
-- [x] Wave 9: updated `.env.example`, README, and operational guidance for both modes.
+- [x] Wave 9: updated `.env.example`, README, and operational guidance for user-mode deployment.
 - [~] Wave 10: expanded tests for config, command flow, helpers, and Telethon conversion; final full-suite validation still pending in a refreshed environment.
-- [ ] Wave 11: optional aiogram removal after stabilization.
+- [x] Wave 11: removed aiogram, Bot API runtime, and bot-mode settings after stabilization.

@@ -1,8 +1,8 @@
 # Telegram AI Thread Bot
 
 Production-ready Python Telegram assistant for multi-topic groups. It stores
-visible messages in PostgreSQL and serves `/ai` plus `/tldr` through either the
-Telegram Bot API (`aiogram`) or the Telegram User API (`Telethon`).
+visible messages in PostgreSQL and serves `/ai` plus `/tldr` through a Telegram
+user account using Telethon.
 
 See [docs/USER_API_MIGRATION_PLAN.md](docs/USER_API_MIGRATION_PLAN.md) for the
 migration checklist and `PROGRESS.md` for current implementation status.
@@ -22,21 +22,10 @@ Bot behavior such as reply size, context budget, `/ai` message caps, and `/tldr`
 lookback/gap limits lives in `config/context_limits.yaml`. Keep `.env` for
 secrets, connection strings, feature flags, and YAML file paths.
 
-## Bot API Mode
+## Run It
 
 ```bash
 # in .env
-# TELEGRAM_MODE=bot
-# TELEGRAM_BOT_TOKEN=...
-docker compose up -d --build
-docker compose logs -f bot
-```
-
-## User API Mode
-
-```bash
-# in .env
-# TELEGRAM_MODE=user
 # TELEGRAM_API_ID=...
 # TELEGRAM_API_HASH=...
 # TELEGRAM_USER_PHONE=...
@@ -47,7 +36,7 @@ docker compose up -d --build
 docker compose logs -f bot
 ```
 
-User mode refuses to start with an empty allowlist unless
+The service refuses to start with an empty allowlist unless
 `ALLOW_UNSAFE_ALL_CHATS=true`.
 
 The login flow stores the Telethon session at `TELEGRAM_USER_SESSION_PATH`
@@ -72,7 +61,7 @@ cp config/whitelist.yaml.example config/whitelist.yaml
 cp config/context_limits.yaml.example config/context_limits.yaml
 cp config/reactions.yaml.example config/reactions.yaml
 
-# Set TELEGRAM_MODE=user, API credentials, phone, allowlisted chats, and OpenRouter key.
+# Set API credentials, phone, allowlisted chats, and OpenRouter key.
 docker compose build
 docker compose run --rm telegram-auth
 docker compose up -d
@@ -88,7 +77,7 @@ docker compose up -d
 ## Manual Smoke Checklist
 
 - Create a Telethon session successfully.
-- Start the service with `TELEGRAM_MODE=user`.
+- Start the service with the Telethon runtime.
 - Send a normal message in an allowlisted group and verify it is ingested.
 - Send `/ai <question>` as an allowed user and verify the reply stays in the same chat/topic.
 - Send `/tldr` as an allowed user and verify the reply stays in the same chat/topic.

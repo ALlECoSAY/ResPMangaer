@@ -4,7 +4,7 @@
 
 - [x] Waves 0-9 implemented in the codebase.
 - [~] Wave 10 test coverage expanded, but full runtime validation is still limited by this sandbox environment.
-- [ ] Wave 11 optional aiogram removal intentionally deferred until dual-mode stabilization.
+- [x] Wave 11 optional aiogram removal completed after dual-mode stabilization.
 
 ## 0. Context
 

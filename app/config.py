@@ -15,12 +15,8 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # Telegram
-    telegram_mode: str = "bot"
-    telegram_bot_token: str = Field(default="")
+    # Telegram user API / MTProto
     telegram_allowed_chat_ids: str = Field(default="")
-    telegram_enable_command_registration: bool = True
-    telegram_register_admin_commands: bool = False
     telegram_api_id: int | None = None
     telegram_api_hash: str = Field(default="")
     telegram_user_session_path: Path = Path("/app/config/telegram_user.session")
@@ -65,11 +61,6 @@ class Settings(BaseSettings):
     def _normalize_log_level(cls, value: str) -> str:
         return value.upper()
 
-    @field_validator("telegram_mode")
-    @classmethod
-    def _normalize_telegram_mode(cls, value: str) -> str:
-        return value.strip().lower()
-
     @property
     def allowed_chat_ids(self) -> set[int]:
         raw = (self.telegram_allowed_chat_ids or "").strip()
@@ -88,22 +79,16 @@ class Settings(BaseSettings):
 
     def require_secrets(self) -> list[str]:
         missing: list[str] = []
-        if self.telegram_mode == "bot":
-            if not self.telegram_bot_token or self.telegram_bot_token == "replace_me":
-                missing.append("TELEGRAM_BOT_TOKEN")
-        elif self.telegram_mode == "user":
-            if self.telegram_api_id is None:
-                missing.append("TELEGRAM_API_ID")
-            if not self.telegram_api_hash or self.telegram_api_hash == "replace_me":
-                missing.append("TELEGRAM_API_HASH")
-            if not self.allow_unsafe_all_chats and not self.allowed_chat_ids:
-                missing.append("TELEGRAM_ALLOWED_CHAT_IDS or ALLOW_UNSAFE_ALL_CHATS=true")
-            if not self.telegram_user_session_path.exists():
-                missing.append(
-                    f"TELEGRAM_USER_SESSION_PATH ({self.telegram_user_session_path})"
-                )
-        else:
-            missing.append("TELEGRAM_MODE must be 'bot' or 'user'")
+        if self.telegram_api_id is None:
+            missing.append("TELEGRAM_API_ID")
+        if not self.telegram_api_hash or self.telegram_api_hash == "replace_me":
+            missing.append("TELEGRAM_API_HASH")
+        if not self.allow_unsafe_all_chats and not self.allowed_chat_ids:
+            missing.append("TELEGRAM_ALLOWED_CHAT_IDS or ALLOW_UNSAFE_ALL_CHATS=true")
+        if not self.telegram_user_session_path.exists():
+            missing.append(
+                f"TELEGRAM_USER_SESSION_PATH ({self.telegram_user_session_path})"
+            )
         if not self.openrouter_api_key or self.openrouter_api_key == "replace_me":
             missing.append("OPENROUTER_API_KEY")
         return missing

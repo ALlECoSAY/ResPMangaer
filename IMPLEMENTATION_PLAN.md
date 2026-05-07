@@ -1,9 +1,8 @@
 # Implementation Plan
 
-The original bot-mode implementation plan has now been superseded by the user
-API migration work.
+The original bot-mode implementation plan has been retired.
 
-- Bot mode remains supported during the stabilization period.
-- User API migration tasks are tracked in
+- The repository now runs only through the Telegram User API / MTProto path.
+- Historical migration tasks remain documented in
   [docs/USER_API_MIGRATION_PLAN.md](docs/USER_API_MIGRATION_PLAN.md).
 - Current execution status is tracked in `PROGRESS.md`.
