@@ -13,7 +13,12 @@ from app.config import Settings
 from app.llm.openrouter_client import LlmResponse
 from app.services import reaction_service as reaction_service_module
 from app.services.reaction_service import ReactionService
-from app.telegram_client.types import TgReactionUpdate, TgUser
+from app.telegram_client.types import (
+    TgMessageReactionSnapshot,
+    TgReactionActor,
+    TgReactionUpdate,
+    TgUser,
+)
 
 
 class _FakeReactionsConfig:
@@ -28,6 +33,8 @@ class _FakeReactionsConfig:
         cooldown_seconds: int = 0,
         bot_emoji: str = "🔥",
         trigger_emojis: tuple[str, ...] = (),
+        fetch_limit_per_emoji: int = 200,
+        ignore_custom_reactions: bool = True,
     ) -> None:
         self.enabled = enabled
         self.min_distinct_users = min_distinct_users
@@ -37,6 +44,8 @@ class _FakeReactionsConfig:
         self.cooldown_seconds = cooldown_seconds
         self.bot_emoji = bot_emoji
         self.trigger_emojis = trigger_emojis
+        self.fetch_limit_per_emoji = fetch_limit_per_emoji
+        self.ignore_custom_reactions = ignore_custom_reactions
 
     def emoji_is_trigger(self, emoji: str) -> bool:
         if not self.trigger_emojis:
@@ -351,6 +360,307 @@ async def test_filtered_trigger_emojis(patched_repo):
         chat_id=1, message_id=10, user_id=99, old=[], new=["👍"]
     )
     await svc.handle_reaction_update(_FakeSession(), tg_client, event)
+    assert client.calls == []
+
+
+@dataclass
+class _FakeSnapshotRepoState:
+    distinct_users: int = 0
+    target_message: Any | None = None
+    before_rows: list = field(default_factory=list)
+    after_rows: list = field(default_factory=list)
+    snapshot_calls: list[dict] = field(default_factory=list)
+    upsert_user_calls: list = field(default_factory=list)
+    record_llm_calls: list[dict] = field(default_factory=list)
+    state: Any | None = None
+    upsert_state_calls: list[dict] = field(default_factory=list)
+
+
+@pytest.fixture
+def patched_snapshot_repo(monkeypatch):
+    state = _FakeSnapshotRepoState()
+
+    async def _replace_snapshot(session, *, chat_id, message_id, rows):
+        state.snapshot_calls.append(
+            dict(chat_id=chat_id, message_id=message_id, rows=list(rows))
+        )
+
+    async def _count(session, *, chat_id, message_id, only_emojis=None):
+        return state.distinct_users
+
+    async def _fetch_target(session, *, chat_id, message_id):
+        return state.target_message
+
+    async def _fetch_around(
+        session,
+        *,
+        chat_id,
+        message_thread_id,
+        target_telegram_date,
+        target_message_id,
+        before,
+        after,
+    ):
+        return state.before_rows[-before:], state.after_rows[:after]
+
+    async def _upsert_user(session, data):
+        state.upsert_user_calls.append(data)
+
+    async def _record(session, **kwargs):
+        state.record_llm_calls.append(kwargs)
+
+    async def _get_state(session, chat_id, message_id):
+        return state.state
+
+    async def _upsert_state(
+        session,
+        chat_id,
+        message_id,
+        *,
+        last_distinct_trigger_users,
+        last_evaluated_at=None,
+        last_reply_at=None,
+    ):
+        call = dict(
+            chat_id=chat_id,
+            message_id=message_id,
+            last_distinct_trigger_users=last_distinct_trigger_users,
+            last_evaluated_at=last_evaluated_at,
+            last_reply_at=last_reply_at,
+        )
+        state.upsert_state_calls.append(call)
+        # Simulate persistence so next get returns latest
+        state.state = SimpleNamespace(
+            chat_id=chat_id,
+            message_id=message_id,
+            last_distinct_trigger_users=last_distinct_trigger_users,
+            last_evaluated_at=last_evaluated_at,
+            last_reply_at=(
+                last_reply_at
+                if last_reply_at is not None
+                else (state.state.last_reply_at if state.state else None)
+            ),
+        )
+
+    monkeypatch.setattr(
+        reaction_service_module,
+        "replace_message_reactions_snapshot",
+        _replace_snapshot,
+    )
+    monkeypatch.setattr(
+        reaction_service_module, "count_distinct_reaction_users", _count
+    )
+    monkeypatch.setattr(
+        reaction_service_module,
+        "fetch_message_by_chat_message_id",
+        _fetch_target,
+    )
+    monkeypatch.setattr(
+        reaction_service_module, "fetch_messages_around", _fetch_around
+    )
+    monkeypatch.setattr(reaction_service_module, "upsert_user", _upsert_user)
+    monkeypatch.setattr(
+        reaction_service_module, "record_llm_interaction", _record
+    )
+    monkeypatch.setattr(
+        reaction_service_module, "get_reaction_state", _get_state
+    )
+    monkeypatch.setattr(
+        reaction_service_module, "upsert_reaction_state", _upsert_state
+    )
+    return state
+
+
+def _make_actor(user_id: int, emojis: list[str], *, is_bot: bool = False):
+    return TgReactionActor(
+        user=TgUser(
+            id=user_id,
+            is_bot=is_bot,
+            username=f"u{user_id}",
+            first_name=f"U{user_id}",
+            last_name=None,
+            language_code="en",
+        ),
+        emojis=list(emojis),
+    )
+
+
+def _make_snapshot(
+    *,
+    chat_id: int,
+    message_id: int,
+    actors: list[TgReactionActor],
+    counts: dict[str, int] | None = None,
+):
+    if counts is None:
+        counts = {}
+        for a in actors:
+            for e in a.emojis:
+                counts[e] = counts.get(e, 0) + 1
+    return TgMessageReactionSnapshot(
+        chat_id=chat_id,
+        message_id=message_id,
+        actors=list(actors),
+        counts=dict(counts),
+    )
+
+
+async def test_snapshot_disabled_no_op(patched_snapshot_repo):
+    cfg = _FakeReactionsConfig(enabled=False)
+    svc, client = _make_service(config=cfg)
+    tg_client = _FakeTelegramClient()
+    snap = _make_snapshot(
+        chat_id=1,
+        message_id=10,
+        actors=[_make_actor(1, ["🔥"]), _make_actor(2, ["🔥"])],
+    )
+    await svc.handle_reaction_snapshot(_FakeSession(), tg_client, snap)
+    assert client.calls == []
+    assert patched_snapshot_repo.snapshot_calls == []
+
+
+async def test_snapshot_below_threshold_persists_only(patched_snapshot_repo):
+    cfg = _FakeReactionsConfig(min_distinct_users=5, reply_chance=1.0)
+    patched_snapshot_repo.distinct_users = 2
+    svc, client = _make_service(config=cfg)
+    tg_client = _FakeTelegramClient()
+    snap = _make_snapshot(
+        chat_id=1,
+        message_id=10,
+        actors=[_make_actor(1, ["🔥"]), _make_actor(2, ["🔥"])],
+    )
+    await svc.handle_reaction_snapshot(_FakeSession(), tg_client, snap)
+    assert client.calls == []
+    tg_client.send_message.assert_not_awaited()
+    assert len(patched_snapshot_repo.snapshot_calls) == 1
+    assert patched_snapshot_repo.upsert_state_calls
+    last = patched_snapshot_repo.upsert_state_calls[-1]
+    assert last["last_distinct_trigger_users"] == 2
+    assert last["last_reply_at"] is None
+
+
+async def test_snapshot_threshold_met_with_chance_one_replies(patched_snapshot_repo):
+    cfg = _FakeReactionsConfig(min_distinct_users=3, reply_chance=1.0)
+    patched_snapshot_repo.distinct_users = 3
+    patched_snapshot_repo.target_message = _make_target_row(10, thread_id=42)
+    svc, client = _make_service(config=cfg, rng_value=0.0)
+    tg_client = _FakeTelegramClient()
+    snap = _make_snapshot(
+        chat_id=1,
+        message_id=10,
+        actors=[
+            _make_actor(1, ["🔥"]),
+            _make_actor(2, ["🔥"]),
+            _make_actor(3, ["🔥"]),
+        ],
+    )
+    await svc.handle_reaction_snapshot(_FakeSession(), tg_client, snap)
+    assert len(client.calls) == 1
+    tg_client.send_message.assert_awaited_once()
+    send_kwargs = tg_client.send_message.await_args.kwargs
+    assert send_kwargs["chat_id"] == 1
+    assert send_kwargs["reply_to_message_id"] == 10
+    assert send_kwargs["message_thread_id"] == 42
+    # state must record last_reply_at
+    last = patched_snapshot_repo.upsert_state_calls[-1]
+    assert last["last_reply_at"] is not None
+
+
+async def test_snapshot_chance_zero_never_replies(patched_snapshot_repo):
+    cfg = _FakeReactionsConfig(min_distinct_users=2, reply_chance=0.0)
+    patched_snapshot_repo.distinct_users = 5
+    patched_snapshot_repo.target_message = _make_target_row(10)
+    svc, client = _make_service(config=cfg, rng_value=0.0)
+    tg_client = _FakeTelegramClient()
+    snap = _make_snapshot(
+        chat_id=1,
+        message_id=10,
+        actors=[_make_actor(i, ["🔥"]) for i in range(1, 6)],
+    )
+    await svc.handle_reaction_snapshot(_FakeSession(), tg_client, snap)
+    assert client.calls == []
+    tg_client.send_message.assert_not_awaited()
+
+
+async def test_snapshot_same_count_does_not_re_evaluate(patched_snapshot_repo):
+    cfg = _FakeReactionsConfig(min_distinct_users=3, reply_chance=1.0)
+    patched_snapshot_repo.distinct_users = 3
+    patched_snapshot_repo.target_message = _make_target_row(10)
+    # State already shows count=3 from earlier; second update with same
+    # count must not roll the dice or call the LLM.
+    patched_snapshot_repo.state = SimpleNamespace(
+        chat_id=1,
+        message_id=10,
+        last_distinct_trigger_users=3,
+        last_evaluated_at=None,
+        last_reply_at=None,
+    )
+    svc, client = _make_service(config=cfg, rng_value=0.0)
+    tg_client = _FakeTelegramClient()
+    snap = _make_snapshot(
+        chat_id=1,
+        message_id=10,
+        actors=[_make_actor(i, ["🔥"]) for i in range(1, 4)],
+    )
+    await svc.handle_reaction_snapshot(_FakeSession(), tg_client, snap)
+    assert client.calls == []
+    tg_client.send_message.assert_not_awaited()
+
+
+async def test_snapshot_persistent_cooldown_blocks(patched_snapshot_repo):
+    cfg = _FakeReactionsConfig(
+        min_distinct_users=2, reply_chance=1.0, cooldown_seconds=600
+    )
+    patched_snapshot_repo.distinct_users = 5
+    patched_snapshot_repo.target_message = _make_target_row(10)
+    patched_snapshot_repo.state = SimpleNamespace(
+        chat_id=1,
+        message_id=10,
+        last_distinct_trigger_users=3,
+        last_evaluated_at=None,
+        last_reply_at=datetime.now(UTC),
+    )
+    svc, client = _make_service(config=cfg, rng_value=0.0)
+    tg_client = _FakeTelegramClient()
+    snap = _make_snapshot(
+        chat_id=1,
+        message_id=10,
+        actors=[_make_actor(i, ["🔥"]) for i in range(1, 6)],
+    )
+    await svc.handle_reaction_snapshot(_FakeSession(), tg_client, snap)
+    assert client.calls == []
+    tg_client.send_message.assert_not_awaited()
+
+
+async def test_snapshot_skips_bot_actors(patched_snapshot_repo):
+    cfg = _FakeReactionsConfig(min_distinct_users=1, reply_chance=1.0)
+    patched_snapshot_repo.distinct_users = 1
+    patched_snapshot_repo.target_message = _make_target_row(10)
+    svc, _ = _make_service(config=cfg, rng_value=0.0)
+    tg_client = _FakeTelegramClient()
+    snap = _make_snapshot(
+        chat_id=1,
+        message_id=10,
+        actors=[
+            _make_actor(1, ["🔥"]),
+            _make_actor(99, ["🔥"], is_bot=True),
+        ],
+    )
+    await svc.handle_reaction_snapshot(_FakeSession(), tg_client, snap)
+    # Only one user upserted: the human one
+    assert len(patched_snapshot_repo.upsert_user_calls) == 1
+    assert patched_snapshot_repo.upsert_user_calls[0].id == 1
+    rows = patched_snapshot_repo.snapshot_calls[0]["rows"]
+    assert rows == [(1, ["🔥"])]
+
+
+async def test_snapshot_empty_is_ignored(patched_snapshot_repo):
+    cfg = _FakeReactionsConfig(min_distinct_users=1, reply_chance=1.0)
+    svc, client = _make_service(config=cfg)
+    tg_client = _FakeTelegramClient()
+    snap = _make_snapshot(chat_id=1, message_id=10, actors=[], counts={})
+    await svc.handle_reaction_snapshot(_FakeSession(), tg_client, snap)
+    assert patched_snapshot_repo.snapshot_calls == []
     assert client.calls == []
 
 

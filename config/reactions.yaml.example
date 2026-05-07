@@ -1,10 +1,16 @@
 version: 1
 reactions:
-  enabled: true
+  enabled: false
   min_distinct_users: 3
   reply_chance: 0.3
   context_before: 5
   context_after: 3
   cooldown_seconds: 600
   bot_emoji: "🔥"
-  trigger_emojis: []
+  trigger_emojis:
+    - "🔥"
+    - "👍"
+    - "😂"
+  user_api:
+    fetch_limit_per_emoji: 200
+    ignore_custom_reactions: true

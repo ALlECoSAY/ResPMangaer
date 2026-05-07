@@ -72,6 +72,8 @@ def build_services(settings: Settings) -> AppServices:
 
 async def run_user_api(settings: Settings, services: AppServices) -> int:
     from telethon import events
+    from telethon.tl import types as tl_types
+    from telethon.utils import get_peer_id
 
     from app.services.message_ingestion import ingest_message
     from app.telegram_client.telethon_adapter import TelethonUserClient
@@ -94,9 +96,6 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
     me = await client.raw_client.get_me()
     username = await client.get_self_username()
     log.info("user.identity", id=getattr(me, "id", None), username=username)
-
-    if services.reaction_service.enabled:
-        log.warning("reactions.user_mode_not_supported")
 
     def bot_username_provider() -> str | None:
         return username
@@ -144,6 +143,65 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
             await handle_whitelist_command(ctx)
         elif parsed.command == "confirm_whitelist":
             await handle_confirm_whitelist_command(ctx)
+
+    @client.raw_client.on(events.Raw)
+    async def handle_raw_update(update) -> None:
+        if not services.reaction_service.enabled:
+            return
+        if not isinstance(update, tl_types.UpdateMessageReactions):
+            return
+
+        peer = getattr(update, "peer", None)
+        message_id = int(getattr(update, "msg_id", 0) or 0)
+        if peer is None or message_id <= 0:
+            return
+
+        try:
+            chat_id = int(get_peer_id(peer))
+        except Exception as exc:
+            log.warning("reactions.user_peer_resolve_failed", error=str(exc))
+            return
+
+        if settings.allowed_chat_ids and chat_id not in settings.allowed_chat_ids:
+            return
+
+        log.debug(
+            "reactions.user_raw_update_received",
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+
+        try:
+            snapshot = await client.fetch_message_reaction_snapshot(
+                chat_id=chat_id,
+                message_id=message_id,
+                trigger_emojis=services.reaction_service.trigger_emojis,
+                limit_per_emoji=services.reaction_service.fetch_limit_per_emoji,
+            )
+        except Exception as exc:
+            log.error(
+                "reactions.user_snapshot_fetch_failed",
+                chat_id=chat_id,
+                message_id=message_id,
+                error=str(exc),
+            )
+            return
+
+        if snapshot is None:
+            return
+
+        try:
+            async with session_scope() as session:
+                await services.reaction_service.handle_reaction_snapshot(
+                    session, client, snapshot
+                )
+        except Exception as exc:
+            log.error(
+                "reactions.user_snapshot_handle_failed",
+                chat_id=chat_id,
+                message_id=message_id,
+                error=str(exc),
+            )
 
     log.info("startup.user_runtime")
     try:

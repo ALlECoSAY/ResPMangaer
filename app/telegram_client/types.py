@@ -46,3 +46,17 @@ class TgReactionUpdate:
     user: TgUser | None
     old_emojis: list[str]
     new_emojis: list[str]
+
+
+@dataclass(frozen=True)
+class TgReactionActor:
+    user: TgUser
+    emojis: list[str]
+
+
+@dataclass(frozen=True)
+class TgMessageReactionSnapshot:
+    chat_id: int
+    message_id: int
+    actors: list[TgReactionActor]
+    counts: dict[str, int]

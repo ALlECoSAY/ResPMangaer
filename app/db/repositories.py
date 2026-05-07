@@ -12,6 +12,7 @@ from app.db.models import (
     TelegramChat,
     TelegramMessage,
     TelegramMessageReaction,
+    TelegramReactionState,
     TelegramThread,
     TelegramUser,
 )
@@ -272,6 +273,52 @@ async def replace_user_reactions(
     await session.execute(stmt)
 
 
+async def replace_message_reactions_snapshot(
+    session: AsyncSession,
+    chat_id: int,
+    message_id: int,
+    rows: list[tuple[int, list[str]]],
+) -> None:
+    """Replace the entire set of reactions for one message with a snapshot.
+
+    Used by the user-API path, which delivers an aggregate reaction update and
+    requires re-fetching the full reactor list rather than a per-user diff.
+    """
+    await session.execute(
+        delete(TelegramMessageReaction).where(
+            and_(
+                TelegramMessageReaction.chat_id == chat_id,
+                TelegramMessageReaction.message_id == message_id,
+            )
+        )
+    )
+    payload: list[dict] = []
+    for user_id, emojis in rows:
+        for emoji in emojis:
+            if not emoji:
+                continue
+            payload.append(
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "user_id": user_id,
+                    "emoji": emoji,
+                }
+            )
+    if not payload:
+        return
+    stmt = pg_insert(TelegramMessageReaction).values(payload)
+    stmt = stmt.on_conflict_do_nothing(
+        index_elements=[
+            TelegramMessageReaction.chat_id,
+            TelegramMessageReaction.message_id,
+            TelegramMessageReaction.user_id,
+            TelegramMessageReaction.emoji,
+        ]
+    )
+    await session.execute(stmt)
+
+
 async def count_distinct_reaction_users(
     session: AsyncSession,
     chat_id: int,
@@ -286,6 +333,72 @@ async def count_distinct_reaction_users(
         stmt = stmt.where(TelegramMessageReaction.emoji.in_(only_emojis))
     result = await session.execute(stmt)
     return int(result.scalar_one() or 0)
+
+
+@dataclass(frozen=True)
+class ReactionState:
+    chat_id: int
+    message_id: int
+    last_distinct_trigger_users: int
+    last_evaluated_at: datetime | None
+    last_reply_at: datetime | None
+
+
+async def get_reaction_state(
+    session: AsyncSession,
+    chat_id: int,
+    message_id: int,
+) -> ReactionState | None:
+    stmt = select(TelegramReactionState).where(
+        TelegramReactionState.chat_id == chat_id,
+        TelegramReactionState.message_id == message_id,
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return ReactionState(
+        chat_id=int(row.chat_id),
+        message_id=int(row.message_id),
+        last_distinct_trigger_users=int(row.last_distinct_trigger_users),
+        last_evaluated_at=row.last_evaluated_at,
+        last_reply_at=row.last_reply_at,
+    )
+
+
+async def upsert_reaction_state(
+    session: AsyncSession,
+    chat_id: int,
+    message_id: int,
+    *,
+    last_distinct_trigger_users: int,
+    last_evaluated_at: datetime | None = None,
+    last_reply_at: datetime | None = None,
+) -> None:
+    values: dict = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "last_distinct_trigger_users": last_distinct_trigger_users,
+    }
+    update_fields: dict = {
+        "last_distinct_trigger_users": last_distinct_trigger_users,
+    }
+    if last_evaluated_at is not None:
+        values["last_evaluated_at"] = last_evaluated_at
+        update_fields["last_evaluated_at"] = last_evaluated_at
+    if last_reply_at is not None:
+        values["last_reply_at"] = last_reply_at
+        update_fields["last_reply_at"] = last_reply_at
+
+    stmt = pg_insert(TelegramReactionState).values(**values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[
+            TelegramReactionState.chat_id,
+            TelegramReactionState.message_id,
+        ],
+        set_=update_fields,
+    )
+    await session.execute(stmt)
 
 
 async def fetch_message_by_chat_message_id(

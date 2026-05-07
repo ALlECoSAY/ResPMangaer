@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,8 +15,11 @@ from app.db.repositories import (
     count_distinct_reaction_users,
     fetch_message_by_chat_message_id,
     fetch_messages_around,
+    get_reaction_state,
     record_llm_interaction,
+    replace_message_reactions_snapshot,
     replace_user_reactions,
+    upsert_reaction_state,
     upsert_user,
 )
 from app.llm.openrouter_client import LlmResponse, OpenRouterClient, OpenRouterError
@@ -23,7 +27,7 @@ from app.llm.reactions_config import RuntimeReactionsConfig
 from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
 from app.telegram_client.client import TelegramClientProtocol
-from app.telegram_client.types import TgReactionUpdate
+from app.telegram_client.types import TgMessageReactionSnapshot, TgReactionUpdate
 
 log = get_logger(__name__)
 
@@ -113,6 +117,14 @@ class ReactionService:
     @property
     def enabled(self) -> bool:
         return self._config.enabled
+
+    @property
+    def trigger_emojis(self) -> tuple[str, ...]:
+        return tuple(self._config.trigger_emojis)
+
+    @property
+    def fetch_limit_per_emoji(self) -> int:
+        return int(self._config.fetch_limit_per_emoji)
 
     async def handle_reaction_update(
         self,
@@ -285,6 +297,257 @@ class ReactionService:
             chat_id=chat_id,
             message_id=message_id,
         )
+
+    async def handle_reaction_snapshot(
+        self,
+        session: AsyncSession,
+        client: TelegramClientProtocol,
+        snapshot: TgMessageReactionSnapshot,
+    ) -> None:
+        if not self._config.enabled:
+            return
+        if not snapshot.actors and not snapshot.counts:
+            log.debug(
+                "reactions.user_snapshot_empty",
+                chat_id=snapshot.chat_id,
+                message_id=snapshot.message_id,
+            )
+            return
+
+        chat_id = snapshot.chat_id
+        message_id = snapshot.message_id
+
+        rows: list[tuple[int, list[str]]] = []
+        for actor in snapshot.actors:
+            user = actor.user
+            if user.is_bot:
+                continue
+            await upsert_user(
+                session,
+                UserInput(
+                    id=user.id,
+                    is_bot=bool(user.is_bot),
+                    username=user.username,
+                    first_name=user.first_name,
+                    last_name=user.last_name,
+                    language_code=user.language_code,
+                ),
+            )
+            rows.append((user.id, list(actor.emojis)))
+
+        await replace_message_reactions_snapshot(
+            session,
+            chat_id=chat_id,
+            message_id=message_id,
+            rows=rows,
+        )
+        await session.flush()
+
+        triggers = list(self._config.trigger_emojis)
+        distinct = await count_distinct_reaction_users(
+            session,
+            chat_id=chat_id,
+            message_id=message_id,
+            only_emojis=triggers if triggers else None,
+        )
+
+        state = await get_reaction_state(session, chat_id, message_id)
+        previous_count = state.last_distinct_trigger_users if state else 0
+        now = datetime.now(UTC)
+
+        if distinct < self._config.min_distinct_users:
+            log.debug(
+                "reactions.threshold_not_met",
+                chat_id=chat_id,
+                message_id=message_id,
+                distinct=distinct,
+                threshold=self._config.min_distinct_users,
+            )
+            await upsert_reaction_state(
+                session,
+                chat_id=chat_id,
+                message_id=message_id,
+                last_distinct_trigger_users=distinct,
+                last_evaluated_at=now,
+            )
+            return
+
+        if distinct <= previous_count:
+            log.debug(
+                "reactions.threshold_not_met",
+                chat_id=chat_id,
+                message_id=message_id,
+                distinct=distinct,
+                previous=previous_count,
+            )
+            return
+
+        if state is not None and self._is_in_persistent_cooldown(state, now):
+            log.debug(
+                "reactions.persistent_cooldown_active",
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+            await upsert_reaction_state(
+                session,
+                chat_id=chat_id,
+                message_id=message_id,
+                last_distinct_trigger_users=distinct,
+                last_evaluated_at=now,
+            )
+            return
+
+        if self._is_in_cooldown(chat_id, message_id):
+            log.debug(
+                "reactions.cooldown_active",
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+            return
+
+        log.debug(
+            "reactions.threshold_met",
+            chat_id=chat_id,
+            message_id=message_id,
+            distinct=distinct,
+        )
+
+        roll = self._rng.random()
+        if roll >= self._config.reply_chance:
+            log.debug(
+                "reactions.dice_lost",
+                chat_id=chat_id,
+                message_id=message_id,
+                roll=roll,
+                chance=self._config.reply_chance,
+            )
+            await upsert_reaction_state(
+                session,
+                chat_id=chat_id,
+                message_id=message_id,
+                last_distinct_trigger_users=distinct,
+                last_evaluated_at=now,
+            )
+            return
+
+        target = await fetch_message_by_chat_message_id(
+            session,
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+        if target is None:
+            log.info(
+                "reactions.target_not_ingested",
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+            await upsert_reaction_state(
+                session,
+                chat_id=chat_id,
+                message_id=message_id,
+                last_distinct_trigger_users=distinct,
+                last_evaluated_at=now,
+            )
+            return
+
+        before_rows, after_rows = await fetch_messages_around(
+            session,
+            chat_id=chat_id,
+            message_thread_id=target.message_thread_id,
+            target_telegram_date=target.telegram_date,
+            target_message_id=target.message_id,
+            before=self._config.context_before,
+            after=self._config.context_after,
+        )
+
+        self._mark_replied(chat_id, message_id)
+        await upsert_reaction_state(
+            session,
+            chat_id=chat_id,
+            message_id=message_id,
+            last_distinct_trigger_users=distinct,
+            last_evaluated_at=now,
+            last_reply_at=now,
+        )
+
+        reactions_summary = _build_reactions_summary(dict(snapshot.counts))
+        context_text = self._build_context_text(before_rows, target, after_rows)
+        user_prompt = REACTION_USER_PROMPT_TEMPLATE.format(
+            context_text=context_text,
+            reactions_summary=reactions_summary,
+        )
+
+        if self._settings.log_prompts:
+            log.info("reactions.prompt", prompt=user_prompt)
+
+        success = False
+        error: str | None = None
+        response: LlmResponse | None = None
+        try:
+            response = await self._client.complete(
+                REACTION_SYSTEM_PROMPT, user_prompt
+            )
+            success = True
+        except OpenRouterError as exc:
+            error = str(exc)
+            log.error(
+                "reactions.llm_failed",
+                chat_id=chat_id,
+                message_id=message_id,
+                error=error,
+            )
+            return
+        finally:
+            await record_llm_interaction(
+                session,
+                chat_id=chat_id,
+                message_thread_id=target.message_thread_id,
+                request_message_id=message_id,
+                command_name="reaction_reply",
+                model=self._settings.openrouter_model,
+                prompt_tokens_estimate=response.prompt_tokens if response else None,
+                completion_tokens_estimate=(
+                    response.completion_tokens if response else None
+                ),
+                latency_ms=response.latency_ms if response else None,
+                success=success,
+                error=error,
+            )
+
+        if not success or response is None:
+            return
+
+        await self._send_reply(
+            client=client,
+            chat_id=chat_id,
+            message_thread_id=target.message_thread_id,
+            target_message_id=message_id,
+            text=response.text,
+        )
+        log.info(
+            "reactions.reply_sent",
+            chat_id=chat_id,
+            message_id=message_id,
+            distinct=distinct,
+        )
+        await self._set_bot_reaction(
+            client=client,
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+
+    def _is_in_persistent_cooldown(
+        self, state, now: datetime
+    ) -> bool:
+        cooldown = self._config.cooldown_seconds
+        if cooldown <= 0:
+            return False
+        last_reply = state.last_reply_at
+        if last_reply is None:
+            return False
+        if last_reply.tzinfo is None:
+            last_reply = last_reply.replace(tzinfo=UTC)
+        return (now - last_reply).total_seconds() < cooldown
 
     def _summarize_emojis(
         self, new_emojis: list[str], old_emojis: list[str]

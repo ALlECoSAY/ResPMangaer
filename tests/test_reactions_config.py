@@ -85,6 +85,37 @@ def test_clamps_invalid_values(tmp_path: Path) -> None:
     assert cfg.cooldown_seconds == 600  # default
 
 
+def test_user_api_section_loaded(tmp_path: Path) -> None:
+    path = tmp_path / "reactions.yaml"
+    _write(
+        path,
+        """
+        reactions:
+          enabled: true
+          user_api:
+            fetch_limit_per_emoji: 50
+            ignore_custom_reactions: false
+        """,
+    )
+    cfg = RuntimeReactionsConfig(path=path)
+    assert cfg.fetch_limit_per_emoji == 50
+    assert cfg.ignore_custom_reactions is False
+
+
+def test_user_api_section_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "reactions.yaml"
+    _write(
+        path,
+        """
+        reactions:
+          enabled: true
+        """,
+    )
+    cfg = RuntimeReactionsConfig(path=path)
+    assert cfg.fetch_limit_per_emoji == 200
+    assert cfg.ignore_custom_reactions is True
+
+
 def test_hot_reload_on_mtime_change(tmp_path: Path) -> None:
     path = tmp_path / "reactions.yaml"
     _write(

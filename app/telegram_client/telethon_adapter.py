@@ -11,9 +11,28 @@ from telethon.utils import get_peer_id
 
 from app.logging_config import get_logger
 from app.telegram_client.client import TelegramClientProtocol
-from app.telegram_client.types import TgChat, TgMessage, TgUser
+from app.telegram_client.types import (
+    TgChat,
+    TgMessage,
+    TgMessageReactionSnapshot,
+    TgReactionActor,
+    TgUser,
+)
 
 log = get_logger(__name__)
+
+
+def reaction_emoji_from_telethon(reaction: Any) -> str | None:
+    """Extract a normal emoji string from a Telethon Reaction value.
+
+    Returns None for empty/custom/paid reactions, which we don't trigger on.
+    """
+    if reaction is None:
+        return None
+    emoticon = getattr(reaction, "emoticon", None)
+    if emoticon:
+        return str(emoticon)
+    return None
 
 
 def user_from_telethon(user: Any) -> TgUser | None:
@@ -256,4 +275,112 @@ class TelethonUserClient(TelegramClientProtocol):
                 add_to_recent=False,
                 reaction=[types.ReactionEmoji(emoticon=emoji)],
             )
+        )
+
+    async def fetch_message_reaction_snapshot(
+        self,
+        chat_id: int,
+        message_id: int,
+        *,
+        trigger_emojis: tuple[str, ...] = (),
+        limit_per_emoji: int = 200,
+    ) -> TgMessageReactionSnapshot | None:
+        """Fetch the current reactor list for one message via MTProto.
+
+        For each configured trigger emoji we call
+        ``messages.GetMessageReactionsListRequest`` separately, then merge
+        per-user emoji sets. With no triggers configured we issue a single
+        unfiltered request to get all reactors.
+        """
+        try:
+            peer = await self._client.get_input_entity(chat_id)
+        except Exception as exc:
+            log.warning(
+                "telethon.reaction_snapshot.peer_failed",
+                chat_id=chat_id,
+                message_id=message_id,
+                error=str(exc),
+            )
+            return None
+
+        emoji_filters: list[Any]
+        if trigger_emojis:
+            emoji_filters = [
+                types.ReactionEmoji(emoticon=emoji) for emoji in trigger_emojis
+            ]
+        else:
+            emoji_filters = [None]
+
+        users_by_id: dict[int, TgUser] = {}
+        emojis_by_user: dict[int, list[str]] = {}
+        counts: dict[str, int] = {}
+
+        for reaction_filter in emoji_filters:
+            try:
+                response = await self._client(
+                    functions.messages.GetMessageReactionsListRequest(
+                        peer=peer,
+                        id=message_id,
+                        reaction=reaction_filter,
+                        offset="",
+                        limit=limit_per_emoji,
+                    )
+                )
+            except Exception as exc:
+                log.warning(
+                    "reactions.user_snapshot_fetch_failed",
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    filter=getattr(reaction_filter, "emoticon", None),
+                    error=str(exc),
+                )
+                continue
+
+            tl_users = {
+                int(getattr(u, "id", 0)): u
+                for u in getattr(response, "users", []) or []
+            }
+
+            for peer_reaction in getattr(response, "reactions", []) or []:
+                emoji = reaction_emoji_from_telethon(
+                    getattr(peer_reaction, "reaction", None)
+                )
+                if not emoji:
+                    continue
+                counts[emoji] = counts.get(emoji, 0) + 1
+
+                peer_id = getattr(peer_reaction, "peer_id", None)
+                user_id = int(getattr(peer_id, "user_id", 0) or 0)
+                if user_id <= 0:
+                    continue
+
+                tl_user = tl_users.get(user_id)
+                if tl_user is None:
+                    continue
+                tg_user = user_from_telethon(tl_user)
+                if tg_user is None:
+                    continue
+                users_by_id.setdefault(user_id, tg_user)
+                bucket = emojis_by_user.setdefault(user_id, [])
+                if emoji not in bucket:
+                    bucket.append(emoji)
+
+        actors: list[TgReactionActor] = [
+            TgReactionActor(user=users_by_id[user_id], emojis=list(emojis))
+            for user_id, emojis in emojis_by_user.items()
+        ]
+
+        log.debug(
+            "reactions.user_snapshot_fetched",
+            chat_id=chat_id,
+            message_id=message_id,
+            actors=len(actors),
+            counts=dict(counts),
+        )
+
+        return TgMessageReactionSnapshot(
+            chat_id=chat_id,
+            message_id=message_id,
+            actors=actors,
+            counts=counts,
         )

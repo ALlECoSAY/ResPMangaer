@@ -22,6 +22,8 @@ class _ReactionLimits:
     cooldown_seconds: int
     bot_emoji: str
     trigger_emojis: tuple[str, ...] = field(default_factory=tuple)
+    fetch_limit_per_emoji: int = 200
+    ignore_custom_reactions: bool = True
 
 
 _DEFAULTS = _ReactionLimits(
@@ -33,6 +35,8 @@ _DEFAULTS = _ReactionLimits(
     cooldown_seconds=600,
     bot_emoji="🔥",
     trigger_emojis=(),
+    fetch_limit_per_emoji=200,
+    ignore_custom_reactions=True,
 )
 
 
@@ -92,6 +96,14 @@ class RuntimeReactionsConfig:
     def trigger_emojis(self) -> tuple[str, ...]:
         return self._current().trigger_emojis
 
+    @property
+    def fetch_limit_per_emoji(self) -> int:
+        return self._current().fetch_limit_per_emoji
+
+    @property
+    def ignore_custom_reactions(self) -> bool:
+        return self._current().ignore_custom_reactions
+
     def emoji_is_trigger(self, emoji: str) -> bool:
         triggers = self.trigger_emojis
         if not triggers:
@@ -132,6 +144,7 @@ class RuntimeReactionsConfig:
             return
 
         section = self._section(data, "reactions")
+        user_api_section = self._section(section, "user_api")
         limits = _ReactionLimits(
             enabled=bool(section.get("enabled", _DEFAULTS.enabled)),
             min_distinct_users=self._coerce_positive_int(
@@ -158,6 +171,16 @@ class RuntimeReactionsConfig:
                 section.get("bot_emoji"), _DEFAULTS.bot_emoji
             ),
             trigger_emojis=self._coerce_emoji_list(section.get("trigger_emojis")),
+            fetch_limit_per_emoji=self._coerce_positive_int(
+                user_api_section.get("fetch_limit_per_emoji"),
+                _DEFAULTS.fetch_limit_per_emoji,
+            ),
+            ignore_custom_reactions=bool(
+                user_api_section.get(
+                    "ignore_custom_reactions",
+                    _DEFAULTS.ignore_custom_reactions,
+                )
+            ),
         )
 
         with self._lock:
@@ -176,6 +199,8 @@ class RuntimeReactionsConfig:
             cooldown_seconds=limits.cooldown_seconds,
             bot_emoji=limits.bot_emoji,
             trigger_emojis=list(limits.trigger_emojis),
+            fetch_limit_per_emoji=limits.fetch_limit_per_emoji,
+            ignore_custom_reactions=limits.ignore_custom_reactions,
         )
 
     @staticmethod

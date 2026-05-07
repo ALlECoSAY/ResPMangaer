@@ -173,6 +173,40 @@ class TelegramMessageReaction(Base):
     )
 
 
+class TelegramReactionState(Base):
+    __tablename__ = "telegram_reaction_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_id",
+            "message_id",
+            name="uq_reaction_state_chat_msg",
+        ),
+        Index("idx_reaction_state_chat_msg", "chat_id", "message_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_distinct_trigger_users: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_reply_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class LlmInteraction(Base):
     __tablename__ = "llm_interactions"
 
