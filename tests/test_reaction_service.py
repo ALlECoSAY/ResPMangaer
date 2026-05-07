@@ -13,6 +13,7 @@ from app.config import Settings
 from app.llm.openrouter_client import LlmResponse
 from app.services import reaction_service as reaction_service_module
 from app.services.reaction_service import ReactionService
+from app.telegram_client.types import TgReactionUpdate, TgUser
 
 
 class _FakeReactionsConfig:
@@ -63,10 +64,10 @@ class _FakeOpenRouter:
         )
 
 
-class _FakeBot:
+class _FakeTelegramClient:
     def __init__(self) -> None:
         self.send_message = AsyncMock()
-        self.set_message_reaction = AsyncMock()
+        self.set_reaction = AsyncMock()
 
 
 @dataclass
@@ -151,10 +152,10 @@ def _make_event(
     old: list[str],
     new: list[str],
 ):
-    return SimpleNamespace(
-        chat=SimpleNamespace(id=chat_id),
+    return TgReactionUpdate(
+        chat_id=chat_id,
         message_id=message_id,
-        user=SimpleNamespace(
+        user=TgUser(
             id=user_id,
             is_bot=False,
             username="alice",
@@ -162,8 +163,8 @@ def _make_event(
             last_name=None,
             language_code="en",
         ),
-        old_reaction=[_make_emoji(e) for e in old],
-        new_reaction=[_make_emoji(e) for e in new],
+        old_emojis=list(old),
+        new_emojis=list(new),
     )
 
 
@@ -182,8 +183,20 @@ def _make_bot_event(
         old=old,
         new=new,
     )
-    event.user.is_bot = True
-    return event
+    return TgReactionUpdate(
+        chat_id=event.chat_id,
+        message_id=event.message_id,
+        user=TgUser(
+            id=event.user.id,
+            is_bot=True,
+            username=event.user.username,
+            first_name=event.user.first_name,
+            last_name=event.user.last_name,
+            language_code=event.user.language_code,
+        ),
+        old_emojis=event.old_emojis,
+        new_emojis=event.new_emojis,
+    )
 
 
 def _make_target_row(message_id: int, thread_id: int = 0):
@@ -228,13 +241,13 @@ def _make_service(
 async def test_disabled_no_op(patched_repo):
     cfg = _FakeReactionsConfig(enabled=False)
     svc, client = _make_service(config=cfg)
-    bot = _FakeBot()
+    tg_client = _FakeTelegramClient()
     event = _make_event(
         chat_id=1, message_id=10, user_id=99, old=[], new=["🔥"]
     )
-    await svc.handle_reaction_update(_FakeSession(), bot, event)  # type: ignore[arg-type]
+    await svc.handle_reaction_update(_FakeSession(), tg_client, event)
     assert client.calls == []
-    bot.send_message.assert_not_awaited()
+    tg_client.send_message.assert_not_awaited()
     assert patched_repo.replace_calls == []
 
 
@@ -242,13 +255,13 @@ async def test_bot_reaction_is_ignored(patched_repo):
     cfg = _FakeReactionsConfig(min_distinct_users=1, reply_chance=1.0)
     patched_repo.distinct_users = 1
     svc, client = _make_service(config=cfg)
-    bot = _FakeBot()
+    tg_client = _FakeTelegramClient()
     event = _make_bot_event(
         chat_id=1, message_id=10, user_id=99, old=[], new=["🔥"]
     )
-    await svc.handle_reaction_update(_FakeSession(), bot, event)  # type: ignore[arg-type]
+    await svc.handle_reaction_update(_FakeSession(), tg_client, event)
     assert client.calls == []
-    bot.send_message.assert_not_awaited()
+    tg_client.send_message.assert_not_awaited()
     assert patched_repo.replace_calls == []
 
 
@@ -256,15 +269,15 @@ async def test_persists_reactions_even_below_threshold(patched_repo):
     cfg = _FakeReactionsConfig(min_distinct_users=10)
     patched_repo.distinct_users = 1
     svc, client = _make_service(config=cfg)
-    bot = _FakeBot()
+    tg_client = _FakeTelegramClient()
     event = _make_event(
         chat_id=1, message_id=10, user_id=99, old=[], new=["🔥"]
     )
-    await svc.handle_reaction_update(_FakeSession(), bot, event)  # type: ignore[arg-type]
+    await svc.handle_reaction_update(_FakeSession(), tg_client, event)
     assert len(patched_repo.replace_calls) == 1
     assert patched_repo.replace_calls[0]["new_emojis"] == ["🔥"]
     assert client.calls == []
-    bot.send_message.assert_not_awaited()
+    tg_client.send_message.assert_not_awaited()
 
 
 async def test_triggers_reply_when_threshold_met(patched_repo):
@@ -274,19 +287,19 @@ async def test_triggers_reply_when_threshold_met(patched_repo):
     patched_repo.before_rows = [_make_target_row(8), _make_target_row(9)]
     patched_repo.after_rows = [_make_target_row(11), _make_target_row(12)]
     svc, client = _make_service(config=cfg, rng_value=0.0)
-    bot = _FakeBot()
+    tg_client = _FakeTelegramClient()
     event = _make_event(
         chat_id=1, message_id=10, user_id=99, old=[], new=["🔥"]
     )
-    await svc.handle_reaction_update(_FakeSession(), bot, event)  # type: ignore[arg-type]
+    await svc.handle_reaction_update(_FakeSession(), tg_client, event)
     assert len(client.calls) == 1
-    bot.send_message.assert_awaited_once()
-    send_kwargs = bot.send_message.await_args.kwargs
+    tg_client.send_message.assert_awaited_once()
+    send_kwargs = tg_client.send_message.await_args.kwargs
     assert send_kwargs["chat_id"] == 1
     assert send_kwargs["reply_to_message_id"] == 10
     assert send_kwargs["message_thread_id"] == 42
-    bot.set_message_reaction.assert_awaited_once()
-    react_kwargs = bot.set_message_reaction.await_args.kwargs
+    tg_client.set_reaction.assert_awaited_once()
+    react_kwargs = tg_client.set_reaction.await_args.kwargs
     assert react_kwargs["chat_id"] == 1
     assert react_kwargs["message_id"] == 10
     # Recorded interaction for observability
@@ -299,13 +312,13 @@ async def test_dice_can_skip_reply(patched_repo):
     patched_repo.distinct_users = 5
     patched_repo.target_message = _make_target_row(10)
     svc, client = _make_service(config=cfg, rng_value=0.99)
-    bot = _FakeBot()
+    tg_client = _FakeTelegramClient()
     event = _make_event(
         chat_id=1, message_id=10, user_id=99, old=[], new=["🔥"]
     )
-    await svc.handle_reaction_update(_FakeSession(), bot, event)  # type: ignore[arg-type]
+    await svc.handle_reaction_update(_FakeSession(), tg_client, event)
     assert client.calls == []
-    bot.send_message.assert_not_awaited()
+    tg_client.send_message.assert_not_awaited()
 
 
 async def test_no_qualifying_added_emoji_does_not_evaluate(patched_repo):
@@ -313,11 +326,11 @@ async def test_no_qualifying_added_emoji_does_not_evaluate(patched_repo):
     cfg = _FakeReactionsConfig(min_distinct_users=1, reply_chance=1.0)
     patched_repo.distinct_users = 100
     svc, client = _make_service(config=cfg, rng_value=0.0)
-    bot = _FakeBot()
+    tg_client = _FakeTelegramClient()
     event = _make_event(
         chat_id=1, message_id=10, user_id=99, old=["🔥"], new=["🔥"]
     )
-    await svc.handle_reaction_update(_FakeSession(), bot, event)  # type: ignore[arg-type]
+    await svc.handle_reaction_update(_FakeSession(), tg_client, event)
     assert client.calls == []
     # And no DB writes either since old==new
     assert patched_repo.replace_calls == []
@@ -332,12 +345,12 @@ async def test_filtered_trigger_emojis(patched_repo):
     patched_repo.distinct_users = 5
     patched_repo.target_message = _make_target_row(10)
     svc, client = _make_service(config=cfg, rng_value=0.0)
-    bot = _FakeBot()
+    tg_client = _FakeTelegramClient()
     # User reacts with 👍 — not in trigger list, should not evaluate.
     event = _make_event(
         chat_id=1, message_id=10, user_id=99, old=[], new=["👍"]
     )
-    await svc.handle_reaction_update(_FakeSession(), bot, event)  # type: ignore[arg-type]
+    await svc.handle_reaction_update(_FakeSession(), tg_client, event)
     assert client.calls == []
 
 
@@ -350,10 +363,10 @@ async def test_cooldown_blocks_second_reply(patched_repo):
     patched_repo.distinct_users = 3
     patched_repo.target_message = _make_target_row(10)
     svc, client = _make_service(config=cfg, rng_value=0.0)
-    bot = _FakeBot()
+    tg_client = _FakeTelegramClient()
     e1 = _make_event(chat_id=1, message_id=10, user_id=1, old=[], new=["🔥"])
     e2 = _make_event(chat_id=1, message_id=10, user_id=2, old=[], new=["🔥"])
-    await svc.handle_reaction_update(_FakeSession(), bot, e1)  # type: ignore[arg-type]
-    await svc.handle_reaction_update(_FakeSession(), bot, e2)  # type: ignore[arg-type]
+    await svc.handle_reaction_update(_FakeSession(), tg_client, e1)
+    await svc.handle_reaction_update(_FakeSession(), tg_client, e2)
     assert len(client.calls) == 1
-    bot.send_message.assert_awaited_once()
+    tg_client.send_message.assert_awaited_once()

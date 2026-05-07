@@ -71,7 +71,7 @@ async def configure_bot(
             public_commands.append(
                 BotCommand(
                     command="whitelist",
-                    description="Admin: reply to a user with /whitelist to add them.",
+                    description="Admin: reply to a user with /whitelist to stage access.",
                 )
             )
         try:

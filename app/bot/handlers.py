@@ -1,49 +1,31 @@
 from __future__ import annotations
 
-from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram import Bot, Router
 from aiogram.filters import Command
-from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-    MessageReactionUpdated,
-)
+from aiogram.types import Message, MessageReactionUpdated
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.auth.access_control import AccessControl
 from app.auth.yaml_store import YamlAccessStore
-from app.bot.commands import parse_command
-from app.bot.formatting import reply_in_same_thread
+from app.bot.command_handlers import (
+    CommandContext,
+    handle_ai_command,
+    handle_confirm_whitelist_command,
+    handle_tldr_command,
+    handle_whitelist_command,
+)
 from app.config import Settings
 from app.db.session import session_scope
-from app.llm.openrouter_client import OpenRouterError
 from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
 from app.services.ai_answer_service import AiAnswerService
 from app.services.reaction_service import ReactionService
-from app.services.tldr_service import (
-    TldrScope,
-    TldrService,
-    make_tldr_request,
-    parse_tldr_lookback,
+from app.services.tldr_service import TldrService
+from app.telegram_client.aiogram_adapter import (
+    AiogramTelegramClient,
+    message_from_aiogram,
+    reaction_update_from_aiogram,
 )
-from app.utils.telegram import display_name, message_thread_id_for
-
-WL_CB_ADD = "wl:add:"
-WL_CB_CANCEL = "wl:cancel"
-
-
-def _whitelist_keyboard(target_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🟢 Да", callback_data=f"{WL_CB_ADD}{target_id}"),
-                InlineKeyboardButton(text="🔴 Нет", callback_data=WL_CB_CANCEL),
-            ]
-        ]
-    )
 
 log = get_logger(__name__)
 
@@ -60,6 +42,20 @@ def build_router(
 ) -> Router:
     router = Router(name="commands")
 
+    def _command_context(message: Message, bot: Bot) -> CommandContext:
+        client = AiogramTelegramClient(bot)
+        return CommandContext(
+            message=message_from_aiogram(message),
+            client=client,
+            settings=settings,
+            access_control=access_control,
+            yaml_store=yaml_store,
+            ai_service=ai_service,
+            tldr_service=tldr_service,
+            runtime_config=runtime_config,
+            bot_username_provider=bot_username_provider,
+        )
+
     @router.message_reaction()
     async def handle_message_reaction(event: MessageReactionUpdated, bot: Bot) -> None:
         if settings.allowed_chat_ids and event.chat.id not in settings.allowed_chat_ids:
@@ -68,244 +64,32 @@ def build_router(
             async with session_scope() as session:
                 await reaction_service.handle_reaction_update(
                     session=session,
-                    bot=bot,
-                    event=event,
+                    client=AiogramTelegramClient(bot),
+                    event=reaction_update_from_aiogram(event),
                 )
         except SQLAlchemyError as exc:
             log.error("reactions.db_error", error=str(exc))
-        except Exception as exc:  # don't let reaction handling crash polling
+        except Exception as exc:
             log.error("reactions.unexpected", error=str(exc))
 
     @router.message(Command("ai", ignore_case=True))
     async def handle_ai(message: Message, bot: Bot) -> None:
-        user_id = message.from_user.id if message.from_user else None
-        decision = await access_control.can_use_ai_commands(user_id)
-        if not decision.allowed:
-            await reply_in_same_thread(
-                bot,
-                message,
-                decision.reason or "denied",
-                runtime_config.max_reply_chars,
-                reply_to_message_id=message.message_id,
-            )
-            return
-
-        parsed = parse_command(message.text, bot_username_provider())
-        question = parsed.args if parsed else ""
-        if not question:
-            await reply_in_same_thread(
-                bot,
-                message,
-                "Usage: /ai <question>",
-                runtime_config.max_reply_chars,
-                reply_to_message_id=message.message_id,
-            )
-            return
-
-        chat_action_kwargs: dict = {"chat_id": message.chat.id, "action": "typing"}
-        if message.message_thread_id:
-            chat_action_kwargs["message_thread_id"] = message.message_thread_id
-        try:
-            await bot.send_chat_action(**chat_action_kwargs)
-        except Exception as exc:
-            log.warning("ai.chat_action_failed", error=str(exc))
-
-        try:
-            async with session_scope() as session:
-                response = await ai_service.answer(
-                    session=session,
-                    chat_id=message.chat.id,
-                    message_thread_id=message_thread_id_for(message),
-                    question=question,
-                    request_message_id=message.message_id,
-                )
-            await reply_in_same_thread(
-                bot,
-                message,
-                response.text,
-                runtime_config.max_reply_chars,
-                reply_to_message_id=message.message_id,
-            )
-        except OpenRouterError as exc:
-            log.error("ai.failed", error=str(exc))
-            await reply_in_same_thread(
-                bot,
-                message,
-                "I could not get an AI response right now. Try again later or use a smaller question.",
-                runtime_config.max_reply_chars,
-                reply_to_message_id=message.message_id,
-            )
-        except SQLAlchemyError as exc:
-            log.error("ai.db_error", error=str(exc))
-            await reply_in_same_thread(
-                bot,
-                message,
-                "I could not get an AI response right now. Try again later.",
-                runtime_config.max_reply_chars,
-                reply_to_message_id=message.message_id,
-            )
-
-    async def _run_tldr(scope: TldrScope, message: Message, bot: Bot) -> None:
-        user_id = message.from_user.id if message.from_user else None
-        decision = await access_control.can_use_ai_commands(user_id)
-        if not decision.allowed:
-            await reply_in_same_thread(
-                bot,
-                message,
-                decision.reason or "denied",
-                runtime_config.max_reply_chars,
-            )
-            return
-
-        parsed = parse_command(message.text, bot_username_provider())
-        args = parsed.args if parsed else ""
-        lookback = parse_tldr_lookback(
-            args,
-            default_lookback_hours=runtime_config.tldr_lookback_hours,
-        )
-        request = make_tldr_request(scope=scope, lookback_hours=lookback)
-
-        log_event = f"{scope}_tldr"
-        try:
-            async with session_scope() as session:
-                response, friendly = await tldr_service.summarize(
-                    session=session,
-                    chat_id=message.chat.id,
-                    message_thread_id=message_thread_id_for(message),
-                    request=request,
-                    request_message_id=message.message_id,
-                )
-            if friendly:
-                await reply_in_same_thread(
-                    bot,
-                    message,
-                    friendly,
-                    runtime_config.max_reply_chars,
-                )
-                return
-            assert response is not None
-            await reply_in_same_thread(
-                bot,
-                message,
-                response.text,
-                runtime_config.max_reply_chars,
-            )
-        except OpenRouterError as exc:
-            log.error(f"{log_event}.failed", error=str(exc))
-            await reply_in_same_thread(
-                bot,
-                message,
-                "I could not summarize the recent activity right now.",
-                runtime_config.max_reply_chars,
-            )
-        except SQLAlchemyError as exc:
-            log.error(f"{log_event}.db_error", error=str(exc))
-            await reply_in_same_thread(
-                bot,
-                message,
-                "I could not summarize the recent activity right now.",
-                runtime_config.max_reply_chars,
-            )
+        await handle_ai_command(_command_context(message, bot))
 
     @router.message(Command("tldr", ignore_case=True))
     async def handle_tldr(message: Message, bot: Bot) -> None:
-        await _run_tldr("thread", message, bot)
+        await handle_tldr_command(_command_context(message, bot), "thread")
 
     @router.message(Command("tldr_all", ignore_case=True))
     async def handle_tldr_all(message: Message, bot: Bot) -> None:
-        await _run_tldr("all", message, bot)
+        await handle_tldr_command(_command_context(message, bot), "all")
 
     @router.message(Command("whitelist", ignore_case=True))
     async def handle_whitelist(message: Message, bot: Bot) -> None:
-        user_id = message.from_user.id if message.from_user else None
-        decision = await access_control.can_manage_whitelist(user_id)
-        if not decision.allowed:
-            await reply_in_same_thread(
-                bot,
-                message,
-                decision.reason or "denied",
-                runtime_config.max_reply_chars,
-                reply_to_message_id=message.message_id,
-            )
-            return
+        await handle_whitelist_command(_command_context(message, bot))
 
-        target_user = (
-            message.reply_to_message.from_user
-            if message.reply_to_message and message.reply_to_message.from_user
-            else None
-        )
-        if target_user is None:
-            await reply_in_same_thread(
-                bot,
-                message,
-                "Reply to a user's message with /whitelist to add them.",
-                runtime_config.max_reply_chars,
-                reply_to_message_id=message.message_id,
-            )
-            return
-
-        prompt = f"Точно? Добавить {display_name(target_user)} (id={target_user.id}) в whitelist?"
-        send_kwargs: dict = {
-            "chat_id": message.chat.id,
-            "text": prompt,
-            "reply_markup": _whitelist_keyboard(target_user.id),
-            "reply_to_message_id": message.message_id,
-        }
-        if message.message_thread_id:
-            send_kwargs["message_thread_id"] = message.message_thread_id
-        await bot.send_message(**send_kwargs)
-
-    @router.callback_query(F.data.startswith("wl:"))
-    async def handle_whitelist_callback(query: CallbackQuery) -> None:
-        clicker_id = query.from_user.id if query.from_user else None
-        if not await access_control.is_admin(clicker_id):
-            await query.answer("Только админ может подтвердить.", show_alert=True)
-            return
-
-        data = query.data or ""
-        message = query.message
-
-        async def _edit(text: str) -> None:
-            if message is None:
-                return
-            try:
-                await message.edit_text(text)
-            except TelegramBadRequest as exc:
-                log.warning("whitelist.edit_failed", error=str(exc))
-
-        if data == WL_CB_CANCEL:
-            await _edit("Отменено.")
-            await query.answer("Отменено.")
-            return
-
-        if data.startswith(WL_CB_ADD):
-            try:
-                target_id = int(data[len(WL_CB_ADD):])
-            except ValueError:
-                await query.answer("Bad payload.", show_alert=True)
-                return
-            try:
-                added = await yaml_store.add_whitelisted_user(
-                    user_id=target_id,
-                    note=None,
-                    added_by_user_id=clicker_id or 0,
-                )
-            except OSError as exc:
-                log.error("whitelist.write_failed", error=str(exc))
-                await query.answer("Не удалось записать whitelist.", show_alert=True)  # noqa: RUF001
-                return
-            if added:
-                log.info(
-                    "whitelist.added",
-                    admin_user_id=clicker_id,
-                    target_user_id=target_id,
-                )
-                await _edit(f"✅ Пользователь {target_id} добавлен в whitelist.")
-            else:
-                await _edit(f"Пользователь {target_id} уже в whitelist.")
-            await query.answer()
-            return
-
-        await query.answer("Неизвестное действие.", show_alert=True)
+    @router.message(Command("confirm_whitelist", ignore_case=True))
+    async def handle_confirm_whitelist(message: Message, bot: Bot) -> None:
+        await handle_confirm_whitelist_command(_command_context(message, bot))
 
     return router

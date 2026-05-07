@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
-from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.commands import parse_command
@@ -17,66 +14,19 @@ from app.db.repositories import (
     upsert_user,
 )
 from app.logging_config import get_logger
-from app.utils.telegram import display_name
+from app.telegram_client.types import TgMessage
+from app.utils.telegram import clean_command_text, display_name
 
 log = get_logger(__name__)
 
 
-def _content_type(message: Message) -> str:
-    if message.text:
-        return "text"
-    if message.photo:
-        return "photo"
-    if message.video:
-        return "video"
-    if message.voice:
-        return "voice"
-    if message.audio:
-        return "audio"
-    if message.document:
-        return "document"
-    if message.sticker:
-        return "sticker"
-    if message.animation:
-        return "animation"
-    if message.poll:
-        return "poll"
-    if message.location:
-        return "location"
-    if message.new_chat_members or message.left_chat_member:
-        return "service"
-    return "other"
-
-
-def _telegram_date(message: Message) -> datetime:
-    if message.date is None:
-        return datetime.now(UTC)
-    if message.date.tzinfo is None:
-        return message.date.replace(tzinfo=UTC)
-    return message.date
-
-
-def _clean_text(text: str | None, command_name: str | None, bot_username: str | None) -> str | None:
-    if not text:
-        return text
-    if not command_name:
-        return text
-    head, _, rest = text.partition(" ")
-    head_no_at = head.split("@", 1)[0]
-    if head_no_at.lower() == f"/{command_name.lower()}":
-        return rest.strip() or None
-    return text
-
-
 async def ingest_message(
     session: AsyncSession,
-    message: Message,
+    message: TgMessage,
     settings: Settings,
     bot_username: str | None,
 ) -> None:
     chat = message.chat
-    if chat is None:
-        return
 
     chat_thread_id = int(message.message_thread_id or 0)
     raw_text = message.text or message.caption
@@ -97,22 +47,16 @@ async def ingest_message(
             type=chat.type,
             title=chat.title,
             username=chat.username,
-            is_forum=bool(getattr(chat, "is_forum", False)),
+            is_forum=bool(chat.is_forum),
         ),
     )
 
-    thread_title: str | None = None
-    if message.is_topic_message and message.reply_to_message and message.reply_to_message.forum_topic_created:
-        thread_title = message.reply_to_message.forum_topic_created.name
-    elif message.forum_topic_created:
-        thread_title = message.forum_topic_created.name
-
-    telegram_date = _telegram_date(message)
+    telegram_date = message.date
     thread_pk = await upsert_thread(
         session,
         chat_id=chat.id,
         message_thread_id=chat_thread_id,
-        title=thread_title,
+        title=message.topic_title,
         seen_at=telegram_date,
     )
 
@@ -132,7 +76,11 @@ async def ingest_message(
         )
 
     sender_name = display_name(message.from_user) if message.from_user else None
-    clean = _clean_text(raw_text, command_name, bot_username)
+    clean = (
+        clean_command_text(raw_text, command_name, bot_username) or None
+        if raw_text
+        else None
+    )
 
     inserted = await insert_message(
         session,
@@ -149,10 +97,8 @@ async def ingest_message(
             text=raw_text,
             clean_text=clean,
             caption=message.caption,
-            content_type=_content_type(message),
-            reply_to_message_id=(
-                message.reply_to_message.message_id if message.reply_to_message else None
-            ),
+            content_type=message.content_type,
+            reply_to_message_id=message.reply_to_message_id,
             telegram_date=telegram_date,
         ),
     )

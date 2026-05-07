@@ -10,6 +10,7 @@ from app.config import Settings
 from app.db.session import session_scope
 from app.logging_config import get_logger
 from app.services.message_ingestion import ingest_message
+from app.telegram_client.aiogram_adapter import message_from_aiogram
 
 log = get_logger(__name__)
 
@@ -55,7 +56,7 @@ class MessageIngestionMiddleware(BaseMiddleware):
                 async with session_scope() as session:
                     await ingest_message(
                         session,
-                        event,
+                        message_from_aiogram(event),
                         self._settings,
                         self._bot_username_provider(),
                     )

@@ -4,11 +4,6 @@ import random
 import time
 from dataclasses import dataclass
 
-from aiogram import Bot
-from aiogram.types import (
-    MessageReactionUpdated,
-    ReactionTypeEmoji,
-)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.formatting import split_for_telegram
@@ -27,6 +22,8 @@ from app.llm.openrouter_client import LlmResponse, OpenRouterClient, OpenRouterE
 from app.llm.reactions_config import RuntimeReactionsConfig
 from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
+from app.telegram_client.client import TelegramClientProtocol
+from app.telegram_client.types import TgReactionUpdate
 
 log = get_logger(__name__)
 
@@ -64,24 +61,6 @@ reply text, nothing else."""
 class _ReactionDiff:
     added: list[str]
     new_set: list[str]
-
-
-def _emojis_from_reaction_list(reactions: list) -> list[str]:
-    """Extract emoji strings from a Telegram reaction list.
-
-    Uses duck typing (``type == 'emoji'`` plus an ``emoji`` attribute) so this
-    function — and tests — don't need to construct real
-    :class:`ReactionTypeEmoji` instances.
-    """
-    out: list[str] = []
-    for r in reactions or []:
-        kind = getattr(r, "type", None)
-        if kind != "emoji":
-            continue
-        emoji = getattr(r, "emoji", None)
-        if emoji:
-            out.append(str(emoji))
-    return out
 
 
 def _diff_reactions(
@@ -131,11 +110,15 @@ class ReactionService:
         # avoiding short bursts of duplicate replies.
         self._recent_replies: dict[tuple[int, int], float] = {}
 
+    @property
+    def enabled(self) -> bool:
+        return self._config.enabled
+
     async def handle_reaction_update(
         self,
         session: AsyncSession,
-        bot: Bot,
-        event: MessageReactionUpdated,
+        client: TelegramClientProtocol,
+        event: TgReactionUpdate,
     ) -> None:
         if not self._config.enabled:
             return
@@ -146,12 +129,12 @@ class ReactionService:
             # Don't count the bot's own reaction back into the threshold.
             return
 
-        chat_id = event.chat.id
+        chat_id = event.chat_id
         message_id = event.message_id
         user = event.user
 
-        old_emojis = _emojis_from_reaction_list(event.old_reaction)
-        new_emojis = _emojis_from_reaction_list(event.new_reaction)
+        old_emojis = list(event.old_emojis)
+        new_emojis = list(event.new_emojis)
         if old_emojis == new_emojis:
             return
 
@@ -291,14 +274,14 @@ class ReactionService:
             return
 
         await self._send_reply(
-            bot=bot,
+            client=client,
             chat_id=chat_id,
             message_thread_id=target.message_thread_id,
             target_message_id=message_id,
             text=response.text,
         )
         await self._set_bot_reaction(
-            bot=bot,
+            client=client,
             chat_id=chat_id,
             message_id=message_id,
         )
@@ -333,7 +316,7 @@ class ReactionService:
 
     async def _send_reply(
         self,
-        bot: Bot,
+        client: TelegramClientProtocol,
         chat_id: int,
         message_thread_id: int,
         target_message_id: int,
@@ -347,7 +330,7 @@ class ReactionService:
             if index == 0:
                 kwargs["reply_to_message_id"] = target_message_id
             try:
-                await bot.send_message(**kwargs)
+                await client.send_message(**kwargs)
             except Exception as exc:  # network / Telegram errors
                 log.error(
                     "reactions.send_failed",
@@ -358,17 +341,13 @@ class ReactionService:
                 return
 
     async def _set_bot_reaction(
-        self, bot: Bot, chat_id: int, message_id: int
+        self, client: TelegramClientProtocol, chat_id: int, message_id: int
     ) -> None:
         emoji = self._config.bot_emoji
         if not emoji:
             return
         try:
-            await bot.set_message_reaction(
-                chat_id=chat_id,
-                message_id=message_id,
-                reaction=[ReactionTypeEmoji(emoji=emoji)],
-            )
+            await client.set_reaction(chat_id=chat_id, message_id=message_id, emoji=emoji)
         except Exception as exc:
             log.warning(
                 "reactions.set_bot_reaction_failed",

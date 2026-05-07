@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from aiogram.types import Message, User
+from app.telegram_client.types import TgMessage, TgUser
 
 
-def display_name(user: User | None) -> str:
+def display_name(user: TgUser | None) -> str:
     if user is None:
         return "unknown"
     if user.username:
@@ -14,12 +14,12 @@ def display_name(user: User | None) -> str:
     return f"user:{user.id}"
 
 
-def message_thread_id_for(message: Message) -> int:
+def message_thread_id_for(message: TgMessage) -> int:
     """Return ``message_thread_id`` or ``0`` for non-topic chats / general."""
     return int(message.message_thread_id or 0)
 
 
-def extract_text(message: Message) -> str:
+def extract_text(message: TgMessage) -> str:
     return message.text or message.caption or ""
 
 

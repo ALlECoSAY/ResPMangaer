@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from aiogram import Bot
-from aiogram.types import Message
+from app.telegram_client.client import TelegramClientProtocol
+from app.telegram_client.types import TgMessage
 
 
 def split_for_telegram(text: str, max_chars: int) -> list[str]:
@@ -31,19 +31,21 @@ def split_for_telegram(text: str, max_chars: int) -> list[str]:
 
 
 async def reply_in_same_thread(
-    bot: Bot,
-    message: Message,
+    client: TelegramClientProtocol,
+    message: TgMessage,
     text: str,
     max_chars: int,
     reply_to_message_id: int | None = None,
-) -> list[Message]:
+) -> list[TgMessage]:
     chunks = split_for_telegram(text, max_chars)
-    sent: list[Message] = []
+    sent: list[TgMessage] = []
     for index, chunk in enumerate(chunks):
-        kwargs: dict = {"chat_id": message.chat.id, "text": chunk}
-        if message.message_thread_id:
-            kwargs["message_thread_id"] = message.message_thread_id
-        if index == 0 and reply_to_message_id is not None:
-            kwargs["reply_to_message_id"] = reply_to_message_id
-        sent.append(await bot.send_message(**kwargs))
+        sent_message = await client.send_message(
+            message.chat.id,
+            chunk,
+            reply_to_message_id=reply_to_message_id if index == 0 else None,
+            message_thread_id=message.message_thread_id or None,
+        )
+        if sent_message is not None:
+            sent.append(sent_message)
     return sent

@@ -14,6 +14,20 @@ services:
     networks:
       - bot_net
 
+  telegram-auth:
+    build: .
+    profiles: ["tools"]
+    env_file:
+      - .env
+    volumes:
+      - ./config:/app/config
+    command: ["python", "-m", "app.tools.create_telegram_session"]
+    stdin_open: true
+    tty: true
+    restart: "no"
+    networks:
+      - bot_net
+
   postgres:
     image: postgres:16-alpine
     container_name: telegram-ai-thread-bot-postgres
