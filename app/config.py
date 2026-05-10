@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     reactions_yaml_path: Path = Path("/app/config/reactions.yaml")
     activity_yaml_path: Path = Path("/app/config/activity.yaml")
     stats_yaml_path: Path = Path("/app/config/stats.yaml")
+    auto_delete_yaml_path: Path = Path("/app/config/auto_delete.yaml")
 
     # OpenRouter
     openrouter_api_key: str = Field(default="")

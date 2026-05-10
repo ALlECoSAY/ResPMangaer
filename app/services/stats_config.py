@@ -21,6 +21,7 @@ class _StatsLimits:
     top_n_threads: int
     max_message_chars: int
     report_schedule: str | None
+    render_as_images: bool
 
 
 _DEFAULTS = _StatsLimits(
@@ -31,6 +32,7 @@ _DEFAULTS = _StatsLimits(
     top_n_threads=5,
     max_message_chars=3_900,
     report_schedule=None,
+    render_as_images=True,
 )
 
 
@@ -84,6 +86,10 @@ class RuntimeStatsConfig:
     @property
     def report_schedule(self) -> str | None:
         return self._current().report_schedule
+
+    @property
+    def render_as_images(self) -> bool:
+        return self._current().render_as_images
 
     def _current(self) -> _StatsLimits:
         self._refresh_if_changed()
@@ -144,6 +150,10 @@ class RuntimeStatsConfig:
             report_schedule=self._coerce_optional_schedule(
                 section.get("report_schedule")
             ),
+            render_as_images=self._coerce_bool(
+                section.get("render_as_images"),
+                _DEFAULTS.render_as_images,
+            ),
         )
 
         with self._lock:
@@ -161,6 +171,7 @@ class RuntimeStatsConfig:
             top_n_threads=limits.top_n_threads,
             max_message_chars=limits.max_message_chars,
             report_schedule=limits.report_schedule,
+            render_as_images=limits.render_as_images,
         )
 
     @staticmethod
@@ -177,6 +188,19 @@ class RuntimeStatsConfig:
         except (TypeError, ValueError):
             return default
         return n if n > 0 else default
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"true", "1", "yes", "on"}:
+            return True
+        if text in {"false", "0", "no", "off"}:
+            return False
+        return default
 
     @staticmethod
     def _coerce_optional_schedule(value: Any) -> str | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -252,6 +253,43 @@ class TelethonUserClient(TelegramClientProtocol):
             formatting_entities=formatting_entities,
         )
         return await self.message_to_tg_message(sent)
+
+    async def send_photo(
+        self,
+        chat_id: int,
+        image_bytes: bytes,
+        *,
+        caption: str | None = None,
+        reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
+        formatting_entities: list[Any] | None = None,
+        file_name: str = "stats.png",
+    ) -> TgMessage | None:
+        reply_target = reply_to_message_id
+        if reply_target is None and message_thread_id is not None and message_thread_id > 0:
+            reply_target = message_thread_id
+        buffer = io.BytesIO(image_bytes)
+        buffer.name = file_name
+        sent = await self._client.send_file(
+            entity=chat_id,
+            file=buffer,
+            caption=caption or "",
+            reply_to=reply_target,
+            formatting_entities=formatting_entities,
+            force_document=False,
+        )
+        if sent is None:
+            return None
+        return await self.message_to_tg_message(sent)
+
+    async def delete_messages(
+        self,
+        chat_id: int,
+        message_ids: list[int],
+    ) -> None:
+        if not message_ids:
+            return
+        await self._client.delete_messages(chat_id, message_ids)
 
     async def send_typing(
         self,

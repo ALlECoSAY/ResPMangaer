@@ -1,0 +1,7 @@
+version: 1
+auto_delete:
+  # Delay (in seconds) before the bot deletes its own response.
+  # Omit a key to keep responses for that command indefinitely.
+  stats: 300
+  help: 300
+  # tldr: 1800

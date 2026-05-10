@@ -158,6 +158,10 @@ class StatsService:
     def max_message_chars(self) -> int:
         return self._config.max_message_chars
 
+    @property
+    def render_as_images(self) -> bool:
+        return getattr(self._config, "render_as_images", False)
+
     async def summary(
         self,
         session: AsyncSession,

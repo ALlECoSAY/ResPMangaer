@@ -18,13 +18,15 @@ cp config/context_limits.yaml.example config/context_limits.yaml
 cp config/reactions.yaml.example config/reactions.yaml
 cp config/activity.yaml.example config/activity.yaml
 cp config/stats.yaml.example config/stats.yaml
+cp config/auto_delete.yaml.example config/auto_delete.yaml
 ```
 
 Bot behavior such as reply size, context budget, `/ai` message caps, and `/tldr`
 lookback/gap limits lives in `config/context_limits.yaml`. Keep `.env` for
 secrets, connection strings, feature flags, and YAML file paths. Chat statistics
 settings live in `config/stats.yaml`. Random active-chat replies live in
-`config/activity.yaml`.
+`config/activity.yaml`. Per-command auto-deletion of bot responses lives in
+`config/auto_delete.yaml`.
 
 ## Run It
 
@@ -66,6 +68,7 @@ cp config/context_limits.yaml.example config/context_limits.yaml
 cp config/reactions.yaml.example config/reactions.yaml
 cp config/activity.yaml.example config/activity.yaml
 cp config/stats.yaml.example config/stats.yaml
+cp config/auto_delete.yaml.example config/auto_delete.yaml
 
 # Set API credentials, phone, allowlisted chats, and OpenRouter key.
 docker compose build
@@ -106,11 +109,37 @@ stats:
   top_n_threads: 5
   max_message_chars: 3900
   report_schedule: null
+  render_as_images: true
 ```
+
+When `render_as_images` is `true`, `/stats` replies as a PNG chart with a short
+text caption (the visible summary lines). The detailed breakdown is sent as a
+follow-up text message inside a collapsed Telegram blockquote. Setting
+`render_as_images` to `false` falls back to the original ASCII bar chart
+rendering — useful if matplotlib is unavailable or undesirable in the runtime.
 
 The `report_schedule` field is reserved for automatic weekly/monthly reports;
 manual `/stats` commands are available in both user-API and allowlisted chat
 deployments.
+
+### Auto-deleting bot responses
+
+The bot can delete its own responses for chosen commands after a configurable
+delay so that helper output (such as `/stats` charts and `/help` listings) does
+not clutter the chat. Edit `config/auto_delete.yaml` (hot-reloads on file
+change):
+
+```yaml
+auto_delete:
+  stats: 300   # delete /stats responses (image + detail message) after 5 minutes
+  help: 300    # delete /help response after 5 minutes
+  # tldr: 1800 # opt in by adding a key here; omit a key to disable for that command
+```
+
+Delays are in seconds. Setting a value to `0` disables auto-deletion for that
+command. Commands not listed in the file are never auto-deleted. The default
+configuration deletes `/stats` and `/help` after 5 minutes and leaves `/tldr`
+output in place.
 
 ## Reactions Feature
 

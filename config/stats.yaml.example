@@ -7,3 +7,6 @@ stats:
   top_n_threads: 5
   report_schedule: null
   max_message_chars: 3900
+  # When true, /stats responses are rendered as charts (PNG image with caption).
+  # When false, the bot falls back to text bar charts and sparklines.
+  render_as_images: true

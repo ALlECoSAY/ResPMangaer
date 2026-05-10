@@ -7,3 +7,4 @@ stats:
   top_n_threads: 5
   report_schedule: null
   max_message_chars: 3900
+  render_as_images: true

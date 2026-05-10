@@ -27,6 +27,7 @@ from app.logging_config import configure_logging, get_logger
 from app.services.activity_poller import ActivityPoller
 from app.services.activity_service import ActivityService
 from app.services.ai_answer_service import AiAnswerService
+from app.services.auto_delete_config import RuntimeAutoDeleteConfig
 from app.services.reaction_poller import ReactionPoller
 from app.services.reaction_service import ReactionService
 from app.services.stats_config import RuntimeStatsConfig
@@ -47,6 +48,7 @@ class AppServices:
     reaction_poller: ReactionPoller
     runtime_context_config: RuntimeContextConfig
     runtime_stats_config: RuntimeStatsConfig
+    runtime_auto_delete_config: RuntimeAutoDeleteConfig
 
 
 def build_services(settings: Settings) -> AppServices:
@@ -68,6 +70,9 @@ def build_services(settings: Settings) -> AppServices:
     tldr_service = TldrService(settings, openrouter, runtime_context_config)
     runtime_stats_config = RuntimeStatsConfig(path=settings.stats_yaml_path)
     stats_service = StatsService(runtime_stats_config)
+    runtime_auto_delete_config = RuntimeAutoDeleteConfig(
+        path=settings.auto_delete_yaml_path
+    )
     activity_config = RuntimeActivityConfig(path=settings.activity_yaml_path)
     activity_service = ActivityService(
         settings=settings,
@@ -104,6 +109,7 @@ def build_services(settings: Settings) -> AppServices:
         reaction_poller=reaction_poller,
         runtime_context_config=runtime_context_config,
         runtime_stats_config=runtime_stats_config,
+        runtime_auto_delete_config=runtime_auto_delete_config,
     )
 
 
@@ -176,6 +182,7 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
             stats_service=services.stats_service,
             runtime_config=services.runtime_context_config,
             bot_username_provider=bot_username_provider,
+            auto_delete_config=services.runtime_auto_delete_config,
         )
 
         if parsed.command == "ai":

@@ -1,0 +1,4 @@
+version: 1
+auto_delete:
+  stats: 150
+  help: 20

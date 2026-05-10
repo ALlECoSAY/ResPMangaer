@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -10,6 +11,7 @@ from app.bot.commands import parse_command
 from app.bot.formatting import reply_in_same_thread
 from app.db.session import session_scope
 from app.logging_config import get_logger
+from app.services.stats_image_renderer import StatsImageRenderer
 from app.services.stats_renderer import StatsRenderer
 from app.services.stats_report import StatsReport
 from app.services.stats_service import parse_stats_args
@@ -21,6 +23,7 @@ if TYPE_CHECKING:
     from app.config import Settings
     from app.llm.runtime_config import RuntimeContextConfig
     from app.services.ai_answer_service import AiAnswerService
+    from app.services.auto_delete_config import RuntimeAutoDeleteConfig
     from app.services.stats_service import StatsService
     from app.services.tldr_service import TldrScope, TldrService
     from app.telegram_client.client import TelegramClientProtocol
@@ -33,9 +36,11 @@ HELP_TEXT = """Available commands:
 /ai <question> - answer using recent thread/chat context
 /tldr [12h|2d] - summarize the current thread
 /tldr_all [12h|2d] - summarize recent activity across the chat
-/stats [users|words|times|threads|reactions|fun] [days|12h|2d] - show chat statistics
+/stats [users|words|times|threads|reactions|fun] [days|12h|2d] - show chat statistics (image + collapsed details)
 /whitelist - admin only; reply to a user to start whitelisting
-/confirm_whitelist <user_id> - admin only; confirm a whitelist change"""
+/confirm_whitelist <user_id> - admin only; confirm a whitelist change
+
+Note: /stats and /help replies auto-delete after the delay configured in config/auto_delete.yaml (defaults to 5 minutes)."""
 
 
 @dataclass
@@ -50,6 +55,7 @@ class CommandContext:
     stats_service: StatsService
     runtime_config: RuntimeContextConfig
     bot_username_provider: Callable[[], str | None]
+    auto_delete_config: RuntimeAutoDeleteConfig | None = None
 
 
 async def _reply(
@@ -59,8 +65,8 @@ async def _reply(
     reply_to_message_id: int | None = None,
     max_chars: int | None = None,
     formatting_entities: list[Any] | None = None,
-) -> None:
-    await reply_in_same_thread(
+) -> list[TgMessage]:
+    return await reply_in_same_thread(
         ctx.client,
         ctx.message,
         text,
@@ -68,6 +74,44 @@ async def _reply(
         reply_to_message_id=reply_to_message_id,
         formatting_entities=formatting_entities,
     )
+
+
+def _schedule_auto_delete(
+    ctx: CommandContext,
+    command: str,
+    sent_messages: list[TgMessage],
+) -> None:
+    config = ctx.auto_delete_config
+    if config is None:
+        return
+    delay = config.delay_seconds(command)
+    if delay is None:
+        return
+    message_ids = [msg.message_id for msg in sent_messages if msg is not None]
+    if not message_ids:
+        return
+    chat_id = ctx.message.chat.id
+    client = ctx.client
+
+    async def _delete_later() -> None:
+        try:
+            await asyncio.sleep(delay)
+            await client.delete_messages(chat_id, message_ids)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning(
+                "auto_delete.failed",
+                command=command,
+                chat_id=chat_id,
+                message_ids=message_ids,
+                error=str(exc),
+            )
+
+    try:
+        asyncio.create_task(_delete_later())
+    except RuntimeError as exc:
+        log.warning("auto_delete.no_running_loop", error=str(exc))
 
 
 def _parsed_command(ctx: CommandContext):
@@ -82,11 +126,12 @@ def _is_openrouter_error(exc: Exception) -> bool:
 
 
 async def handle_help_command(ctx: CommandContext) -> None:
-    await _reply(
+    sent = await _reply(
         ctx,
         HELP_TEXT,
         reply_to_message_id=ctx.message.message_id,
     )
+    _schedule_auto_delete(ctx, "help", sent)
 
 
 async def handle_ai_command(ctx: CommandContext) -> None:
@@ -270,20 +315,76 @@ async def handle_stats_command(ctx: CommandContext) -> None:
                 graph_lines=[],
                 detail_lines=[],
             )
+
+        sent_messages: list[TgMessage] = []
+        render_as_images = bool(getattr(ctx.stats_service, "render_as_images", False))
+        if render_as_images:
+            sent_messages = await _send_stats_as_image(ctx, report)
+        else:
+            rendered = StatsRenderer().render(
+                report,
+                max_chars=ctx.stats_service.max_message_chars,
+            )
+            sent_messages = await _reply(
+                ctx,
+                rendered.text,
+                reply_to_message_id=ctx.message.message_id,
+                max_chars=ctx.stats_service.max_message_chars,
+                formatting_entities=rendered.entities,
+            )
+        _schedule_auto_delete(ctx, "stats", sent_messages)
+    except SQLAlchemyError as exc:
+        log.error("stats.db_error", error=str(exc))
+        await _reply(ctx, "I could not compute stats right now.")
+
+
+async def _send_stats_as_image(
+    ctx: CommandContext,
+    report: StatsReport,
+) -> list[TgMessage]:
+    sent: list[TgMessage] = []
+    try:
+        rendered_image = await StatsImageRenderer().render(
+            report,
+            max_chars=ctx.stats_service.max_message_chars,
+        )
+    except Exception as exc:
+        log.warning("stats.image_render_failed", error=str(exc))
         rendered = StatsRenderer().render(
             report,
             max_chars=ctx.stats_service.max_message_chars,
         )
-        await _reply(
+        return await _reply(
             ctx,
             rendered.text,
             reply_to_message_id=ctx.message.message_id,
             max_chars=ctx.stats_service.max_message_chars,
             formatting_entities=rendered.entities,
         )
-    except SQLAlchemyError as exc:
-        log.error("stats.db_error", error=str(exc))
-        await _reply(ctx, "I could not compute stats right now.")
+
+    photo_msg = await ctx.client.send_photo(
+        ctx.message.chat.id,
+        rendered_image.image_bytes,
+        caption=rendered_image.caption,
+        reply_to_message_id=ctx.message.message_id,
+        message_thread_id=ctx.message.message_thread_id or None,
+        formatting_entities=rendered_image.caption_entities or None,
+        file_name="stats.png",
+    )
+    if photo_msg is not None:
+        sent.append(photo_msg)
+
+    if rendered_image.detail_text:
+        detail_messages = await reply_in_same_thread(
+            ctx.client,
+            ctx.message,
+            rendered_image.detail_text,
+            ctx.stats_service.max_message_chars,
+            reply_to_message_id=None,
+            formatting_entities=rendered_image.detail_entities or None,
+        )
+        sent.extend(detail_messages)
+    return sent
 
 
 async def handle_whitelist_command(ctx: CommandContext) -> None:

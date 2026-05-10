@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,7 +18,9 @@ from app.bot.command_handlers import (
 )
 from app.config import Settings
 from app.llm.runtime_config import RuntimeContextConfig
+from app.services.auto_delete_config import RuntimeAutoDeleteConfig
 from app.services.stats_config import RuntimeStatsConfig
+from app.services.stats_report import StatsReport
 from app.services.stats_service import StatsService
 from app.telegram_client.types import TgChat, TgMessage, TgUser
 
@@ -25,7 +28,10 @@ from app.telegram_client.types import TgChat, TgMessage, TgUser
 @dataclass
 class _FakeClient:
     sent_messages: list[dict] = field(default_factory=list)
+    sent_photos: list[dict] = field(default_factory=list)
+    deleted: list[dict] = field(default_factory=list)
     typing_calls: list[dict] = field(default_factory=list)
+    next_message_id: int = 1000
 
     async def get_self_username(self) -> str | None:
         return "RespManager"
@@ -48,7 +54,66 @@ class _FakeClient:
                 "formatting_entities": formatting_entities,
             }
         )
-        return _make_message(text=text, thread_id=message_thread_id or 0)
+        message_id = self.next_message_id
+        self.next_message_id += 1
+        msg = _make_message(text=text, thread_id=message_thread_id or 0)
+        return TgMessage(
+            chat=msg.chat,
+            message_id=message_id,
+            message_thread_id=msg.message_thread_id,
+            from_user=msg.from_user,
+            date=msg.date,
+            text=msg.text,
+            caption=msg.caption,
+            content_type=msg.content_type,
+            reply_to_message_id=msg.reply_to_message_id,
+            reply_to_from_user=msg.reply_to_from_user,
+        )
+
+    async def send_photo(
+        self,
+        chat_id: int,
+        image_bytes: bytes,
+        *,
+        caption: str | None = None,
+        reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
+        formatting_entities: list[object] | None = None,
+        file_name: str = "stats.png",
+    ) -> TgMessage | None:
+        self.sent_photos.append(
+            {
+                "chat_id": chat_id,
+                "image_bytes": image_bytes,
+                "caption": caption,
+                "reply_to_message_id": reply_to_message_id,
+                "message_thread_id": message_thread_id,
+                "formatting_entities": formatting_entities,
+                "file_name": file_name,
+            }
+        )
+        message_id = self.next_message_id
+        self.next_message_id += 1
+        msg = _make_message(text=caption or "", thread_id=message_thread_id or 0)
+        return TgMessage(
+            chat=msg.chat,
+            message_id=message_id,
+            message_thread_id=msg.message_thread_id,
+            from_user=msg.from_user,
+            date=msg.date,
+            text=None,
+            caption=caption,
+            content_type="photo",
+            reply_to_message_id=msg.reply_to_message_id,
+            reply_to_from_user=msg.reply_to_from_user,
+        )
+
+    async def delete_messages(
+        self,
+        chat_id: int,
+        message_ids: list[int],
+    ) -> None:
+        self.deleted.append({"chat_id": chat_id, "message_ids": list(message_ids)})
 
     async def send_typing(
         self,
@@ -260,6 +325,111 @@ async def test_stats_command_uses_service_and_split_limit(tmp_path: Path, monkey
     assert stats_service.calls[0]["method"] == "summary"
     assert len(client.sent_messages) >= 2
     assert client.sent_messages[0]["reply_to_message_id"] == 10
+
+
+class _ImageStatsService:
+    enabled = True
+    default_lookback_days = 7
+    max_message_chars = 3900
+    render_as_images = True
+
+    async def summary(self, session, chat_id: int, lookback):
+        return StatsReport(
+            title="Chat Stats · last 7d",
+            visible_lines=["Messages: 5", "Top chatter: alice (3)"],
+            graph_lines=["alice ████ 3", "bob ░░ 1"],
+            detail_lines=["alice messaged a lot today"],
+        )
+
+
+async def test_stats_command_sends_image_when_configured(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ctx, client, _ai_service, _store = _make_ctx(
+        tmp_path,
+        message=_make_message(text="/stats"),
+        admins_yaml="version: 1\nadmins: []\n",
+        whitelist_yaml="version: 1\nusers:\n  - id: 100\n",
+    )
+    ctx.stats_service = _ImageStatsService()  # type: ignore[assignment]
+    monkeypatch.setattr(command_handlers_module, "session_scope", lambda: _FakeSessionScope())
+
+    async def _fake_render(self, report, *, max_chars):
+        from app.services.stats_image_renderer import RenderedStatsImage
+
+        return RenderedStatsImage(
+            image_bytes=b"PNG",
+            caption="caption",
+            caption_entities=[],
+            detail_text="Details:\n> alice messaged a lot today",
+            detail_entities=[],
+        )
+
+    monkeypatch.setattr(
+        command_handlers_module.StatsImageRenderer,
+        "render",
+        _fake_render,
+    )
+
+    await handle_stats_command(ctx)
+
+    assert client.sent_photos, "expected photo to be sent"
+    assert client.sent_photos[0]["caption"] == "caption"
+    assert client.sent_photos[0]["reply_to_message_id"] == 10
+    assert any(
+        msg["text"].startswith("Details:") for msg in client.sent_messages
+    ), "expected detail text follow-up"
+
+
+async def test_help_command_schedules_auto_delete(tmp_path: Path) -> None:
+    ctx, client, _ai_service, _store = _make_ctx(
+        tmp_path,
+        message=_make_message(text="/help", user_id=999, username="not_whitelisted"),
+        admins_yaml="version: 1\nadmins: []\n",
+        whitelist_yaml="version: 1\nusers: []\n",
+    )
+
+    auto_delete_yaml = tmp_path / "auto_delete.yaml"
+    auto_delete_yaml.write_text(
+        "version: 1\nauto_delete:\n  help: 1\n",
+        encoding="utf-8",
+    )
+    ctx.auto_delete_config = RuntimeAutoDeleteConfig(path=auto_delete_yaml)
+
+    await handle_help_command(ctx)
+
+    assert client.sent_messages
+    sent_message_id = client.sent_messages[0]
+    # Wait for the deletion task to fire.
+    for _ in range(30):
+        if client.deleted:
+            break
+        await asyncio.sleep(0.05)
+    assert client.deleted, "expected auto-delete to fire"
+    assert client.deleted[0]["chat_id"] == ctx.message.chat.id
+    assert client.deleted[0]["message_ids"], "expected at least one deleted id"
+    del sent_message_id
+
+
+async def test_stats_command_skips_auto_delete_when_no_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ctx, client, _ai_service, _store = _make_ctx(
+        tmp_path,
+        message=_make_message(text="/stats"),
+        admins_yaml="version: 1\nadmins: []\n",
+        whitelist_yaml="version: 1\nusers:\n  - id: 100\n",
+    )
+    ctx.stats_service = _FakeStatsService()  # type: ignore[assignment]
+    monkeypatch.setattr(command_handlers_module, "session_scope", lambda: _FakeSessionScope())
+    ctx.auto_delete_config = None
+
+    await handle_stats_command(ctx)
+
+    await asyncio.sleep(0.1)
+    assert not client.deleted
 
 
 async def test_stats_command_reports_bad_args(tmp_path: Path) -> None:

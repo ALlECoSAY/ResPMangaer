@@ -20,6 +20,26 @@ class TelegramClientProtocol(Protocol):
     ) -> TgMessage | None:
         ...
 
+    async def send_photo(
+        self,
+        chat_id: int,
+        image_bytes: bytes,
+        *,
+        caption: str | None = None,
+        reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
+        formatting_entities: list[Any] | None = None,
+        file_name: str = "stats.png",
+    ) -> TgMessage | None:
+        ...
+
+    async def delete_messages(
+        self,
+        chat_id: int,
+        message_ids: list[int],
+    ) -> None:
+        ...
+
     async def send_typing(
         self,
         chat_id: int,
