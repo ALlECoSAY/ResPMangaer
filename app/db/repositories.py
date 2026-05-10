@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     LlmInteraction,
+    TelegramActivityReplyState,
     TelegramChat,
     TelegramMessage,
     TelegramMessageReaction,
@@ -194,6 +195,83 @@ async def fetch_recent_cross_thread(
     stmt = stmt.order_by(TelegramMessage.telegram_date.desc()).limit(limit)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def fetch_recent_message_count(
+    session: AsyncSession,
+    chat_id: int,
+    message_thread_id: int,
+    since: datetime,
+    *,
+    exclude_bot_messages: bool = True,
+    exclude_commands: bool = True,
+) -> int:
+    stmt = select(func.count(TelegramMessage.id)).where(
+        TelegramMessage.chat_id == chat_id,
+        TelegramMessage.message_thread_id == message_thread_id,
+        TelegramMessage.telegram_date >= since,
+    )
+    if exclude_bot_messages:
+        stmt = stmt.where(TelegramMessage.is_bot_message.is_(False))
+    if exclude_commands:
+        stmt = stmt.where(TelegramMessage.is_command.is_(False))
+    result = await session.execute(stmt)
+    return int(result.scalar_one() or 0)
+
+
+async def fetch_last_messages(
+    session: AsyncSession,
+    chat_id: int,
+    message_thread_id: int,
+    limit: int,
+    *,
+    since: datetime | None = None,
+) -> list[TelegramMessage]:
+    stmt = select(TelegramMessage).where(
+        TelegramMessage.chat_id == chat_id,
+        TelegramMessage.message_thread_id == message_thread_id,
+    )
+    if since is not None:
+        stmt = stmt.where(TelegramMessage.telegram_date >= since)
+    stmt = (
+        stmt.order_by(
+            TelegramMessage.telegram_date.desc(),
+            TelegramMessage.message_id.desc(),
+        )
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(reversed(result.scalars().all()))
+
+
+async def fetch_active_threads(
+    session: AsyncSession,
+    chat_ids: list[int] | None,
+    since: datetime,
+    min_messages: int,
+    limit: int,
+) -> list[tuple[int, int, int]]:
+    count_expr = func.count(TelegramMessage.id)
+    stmt = (
+        select(
+            TelegramMessage.chat_id,
+            TelegramMessage.message_thread_id,
+            count_expr.label("message_count"),
+        )
+        .where(
+            TelegramMessage.telegram_date >= since,
+            TelegramMessage.is_bot_message.is_(False),
+            TelegramMessage.is_command.is_(False),
+        )
+        .group_by(TelegramMessage.chat_id, TelegramMessage.message_thread_id)
+        .having(count_expr >= min_messages)
+        .order_by(count_expr.desc())
+        .limit(limit)
+    )
+    if chat_ids:
+        stmt = stmt.where(TelegramMessage.chat_id.in_(chat_ids))
+    result = await session.execute(stmt)
+    return [(int(row[0]), int(row[1]), int(row[2])) for row in result.all()]
 
 
 async def fetch_messages_for_tldr(
@@ -583,6 +661,76 @@ async def count_distinct_reaction_users(
         stmt = stmt.where(TelegramMessageReaction.emoji.in_(only_emojis))
     result = await session.execute(stmt)
     return int(result.scalar_one() or 0)
+
+
+@dataclass(frozen=True)
+class ActivityReplyState:
+    chat_id: int
+    message_thread_id: int
+    last_reply_at: datetime | None
+    last_bot_message_id: int | None
+    last_target_message_id: int | None
+
+
+async def get_activity_reply_state(
+    session: AsyncSession,
+    chat_id: int,
+    message_thread_id: int,
+) -> ActivityReplyState | None:
+    stmt = select(TelegramActivityReplyState).where(
+        TelegramActivityReplyState.chat_id == chat_id,
+        TelegramActivityReplyState.message_thread_id == message_thread_id,
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return ActivityReplyState(
+        chat_id=int(row.chat_id),
+        message_thread_id=int(row.message_thread_id),
+        last_reply_at=row.last_reply_at,
+        last_bot_message_id=(
+            int(row.last_bot_message_id)
+            if row.last_bot_message_id is not None
+            else None
+        ),
+        last_target_message_id=(
+            int(row.last_target_message_id)
+            if row.last_target_message_id is not None
+            else None
+        ),
+    )
+
+
+async def upsert_activity_reply_state(
+    session: AsyncSession,
+    chat_id: int,
+    message_thread_id: int,
+    *,
+    last_reply_at: datetime,
+    last_bot_message_id: int | None,
+    last_target_message_id: int | None,
+) -> None:
+    values: dict = {
+        "chat_id": chat_id,
+        "message_thread_id": message_thread_id,
+        "last_reply_at": last_reply_at,
+        "last_bot_message_id": last_bot_message_id,
+        "last_target_message_id": last_target_message_id,
+    }
+    stmt = pg_insert(TelegramActivityReplyState).values(**values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[
+            TelegramActivityReplyState.chat_id,
+            TelegramActivityReplyState.message_thread_id,
+        ],
+        set_={
+            "last_reply_at": last_reply_at,
+            "last_bot_message_id": last_bot_message_id,
+            "last_target_message_id": last_target_message_id,
+        },
+    )
+    await session.execute(stmt)
 
 
 @dataclass(frozen=True)

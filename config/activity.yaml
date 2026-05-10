@@ -1,0 +1,17 @@
+version: 1
+activity_responder:
+  enabled: true
+  min_messages: 6
+  window_minutes: 10
+  max_context_messages: 25
+  reply_chance: 0.25
+  reply_on_direct_reply_chance: 1.0
+  reply_on_follow_up_chance: 0.5
+  cooldown_seconds: 250
+  follow_up_window_seconds: 300
+  allowed_hours: []
+  user_api:
+    poll_enabled: true
+    poll_interval_seconds: 45
+    poll_window_minutes: 10
+    poll_max_threads_per_tick: 20

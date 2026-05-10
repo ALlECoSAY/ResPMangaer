@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     admins_yaml_path: Path = Path("/app/config/admins.yaml")
     context_limits_yaml_path: Path = Path("/app/config/context_limits.yaml")
     reactions_yaml_path: Path = Path("/app/config/reactions.yaml")
+    activity_yaml_path: Path = Path("/app/config/activity.yaml")
     stats_yaml_path: Path = Path("/app/config/stats.yaml")
 
     # OpenRouter

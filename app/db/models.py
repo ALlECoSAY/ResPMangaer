@@ -173,6 +173,42 @@ class TelegramMessageReaction(Base):
     )
 
 
+class TelegramActivityReplyState(Base):
+    __tablename__ = "telegram_activity_reply_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_id",
+            "message_thread_id",
+            name="uq_activity_reply_state_chat_thread",
+        ),
+        Index(
+            "idx_activity_reply_state_chat_thread",
+            "chat_id",
+            "message_thread_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_thread_id: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
+    last_reply_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_bot_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    last_target_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class TelegramReactionState(Base):
     __tablename__ = "telegram_reaction_states"
     __table_args__ = (

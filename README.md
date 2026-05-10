@@ -16,13 +16,15 @@ cp config/admins.yaml.example config/admins.yaml
 cp config/whitelist.yaml.example config/whitelist.yaml
 cp config/context_limits.yaml.example config/context_limits.yaml
 cp config/reactions.yaml.example config/reactions.yaml
+cp config/activity.yaml.example config/activity.yaml
 cp config/stats.yaml.example config/stats.yaml
 ```
 
 Bot behavior such as reply size, context budget, `/ai` message caps, and `/tldr`
 lookback/gap limits lives in `config/context_limits.yaml`. Keep `.env` for
 secrets, connection strings, feature flags, and YAML file paths. Chat statistics
-settings live in `config/stats.yaml`.
+settings live in `config/stats.yaml`. Random active-chat replies live in
+`config/activity.yaml`.
 
 ## Run It
 
@@ -62,6 +64,7 @@ cp config/admins.yaml.example config/admins.yaml
 cp config/whitelist.yaml.example config/whitelist.yaml
 cp config/context_limits.yaml.example config/context_limits.yaml
 cp config/reactions.yaml.example config/reactions.yaml
+cp config/activity.yaml.example config/activity.yaml
 cp config/stats.yaml.example config/stats.yaml
 
 # Set API credentials, phone, allowlisted chats, and OpenRouter key.
@@ -186,6 +189,45 @@ Notable structured log events:
 - `reactions.reply_sent` — the bot replied to the message.
 
 Prompts are only logged when `LOG_PROMPTS=true`.
+
+## Activity Responder
+
+The bot can occasionally join lively conversations without a command. A
+background poller counts recent non-command, non-bot messages per chat/thread;
+when a thread crosses the configured activity threshold, the bot rolls a dice,
+selects a recent message, and replies with a short LLM-generated comment.
+
+It also tracks the last activity reply in `telegram_activity_reply_states`. If
+someone replies directly to that bot message, the bot can answer with a
+separate probability. If someone continues in the same thread shortly after the
+bot reply without using Telegram's reply UI, the bot can treat that as a
+follow-up and decide whether to answer.
+
+Edit `config/activity.yaml` (hot-reloads on file change):
+
+```yaml
+activity_responder:
+  enabled: true
+  min_messages: 20              # messages needed in the activity window
+  window_minutes: 30            # threshold window for spontaneous replies
+  max_context_messages: 40      # recent messages sent to the LLM
+  reply_chance: 0.3             # random reply probability once eligible
+  reply_on_direct_reply_chance: 1.0
+  reply_on_follow_up_chance: 0.5
+  cooldown_seconds: 900         # per chat/thread spontaneous cooldown
+  follow_up_window_seconds: 300 # non-reply follow-up detection window
+  allowed_hours: []             # empty = allow all hours
+  user_api:
+    poll_enabled: true
+    poll_interval_seconds: 60
+    poll_window_minutes: 30
+    poll_max_threads_per_tick: 20
+```
+
+Set `enabled: false` to disable the feature. Set `reply_chance: 0.0` to observe
+activity without spontaneous replies. `allowed_hours` uses the runtime/server
+hour and only gates spontaneous replies; direct replies to the bot can still be
+handled through their own chance setting.
 
 ## Manual Smoke Checklist
 

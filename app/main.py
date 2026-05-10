@@ -18,11 +18,14 @@ from app.bot.command_handlers import (
 from app.bot.commands import parse_command
 from app.config import Settings, get_settings
 from app.db.session import dispose_engine, init_engine, session_scope
+from app.llm.activity_config import RuntimeActivityConfig
 from app.llm.context_builder import ContextBuilder
 from app.llm.openrouter_client import OpenRouterClient
 from app.llm.reactions_config import RuntimeReactionsConfig
 from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import configure_logging, get_logger
+from app.services.activity_poller import ActivityPoller
+from app.services.activity_service import ActivityService
 from app.services.ai_answer_service import AiAnswerService
 from app.services.reaction_poller import ReactionPoller
 from app.services.reaction_service import ReactionService
@@ -38,6 +41,8 @@ class AppServices:
     ai_service: AiAnswerService
     tldr_service: TldrService
     stats_service: StatsService
+    activity_service: ActivityService
+    activity_poller: ActivityPoller
     reaction_service: ReactionService
     reaction_poller: ReactionPoller
     runtime_context_config: RuntimeContextConfig
@@ -63,6 +68,18 @@ def build_services(settings: Settings) -> AppServices:
     tldr_service = TldrService(settings, openrouter, runtime_context_config)
     runtime_stats_config = RuntimeStatsConfig(path=settings.stats_yaml_path)
     stats_service = StatsService(runtime_stats_config)
+    activity_config = RuntimeActivityConfig(path=settings.activity_yaml_path)
+    activity_service = ActivityService(
+        settings=settings,
+        config=activity_config,
+        runtime_config=runtime_context_config,
+        client=openrouter,
+    )
+    activity_poller = ActivityPoller(
+        settings=settings,
+        config=activity_config,
+        activity_service=activity_service,
+    )
     reactions_config = RuntimeReactionsConfig(path=settings.reactions_yaml_path)
     reaction_service = ReactionService(
         settings=settings,
@@ -81,6 +98,8 @@ def build_services(settings: Settings) -> AppServices:
         ai_service=ai_service,
         tldr_service=tldr_service,
         stats_service=stats_service,
+        activity_service=activity_service,
+        activity_poller=activity_poller,
         reaction_service=reaction_service,
         reaction_poller=reaction_poller,
         runtime_context_config=runtime_context_config,
@@ -137,6 +156,13 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
 
         parsed = parse_command(tg_message.text, bot_username_provider())
         if parsed is None:
+            try:
+                async with session_scope() as session:
+                    await services.activity_service.handle_incoming_message(
+                        session, client, tg_message
+                    )
+            except Exception as exc:
+                log.error("activity.incoming_handle_failed", error=str(exc))
             return
 
         ctx = CommandContext(
@@ -232,10 +258,12 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
             )
 
     log.info("startup.user_runtime")
+    services.activity_poller.start(client)
     services.reaction_poller.start(client)
     try:
         await client.run_until_disconnected()
     finally:
+        await services.activity_poller.stop()
         await services.reaction_poller.stop()
         await client.disconnect()
     return 0
