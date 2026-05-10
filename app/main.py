@@ -10,6 +10,8 @@ from app.bot.command_handlers import (
     CommandContext,
     handle_ai_command,
     handle_confirm_whitelist_command,
+    handle_help_command,
+    handle_stats_command,
     handle_tldr_command,
     handle_whitelist_command,
 )
@@ -24,6 +26,8 @@ from app.logging_config import configure_logging, get_logger
 from app.services.ai_answer_service import AiAnswerService
 from app.services.reaction_poller import ReactionPoller
 from app.services.reaction_service import ReactionService
+from app.services.stats_config import RuntimeStatsConfig
+from app.services.stats_service import StatsService
 from app.services.tldr_service import TldrService
 
 
@@ -33,9 +37,11 @@ class AppServices:
     access_control: AccessControl
     ai_service: AiAnswerService
     tldr_service: TldrService
+    stats_service: StatsService
     reaction_service: ReactionService
     reaction_poller: ReactionPoller
     runtime_context_config: RuntimeContextConfig
+    runtime_stats_config: RuntimeStatsConfig
 
 
 def build_services(settings: Settings) -> AppServices:
@@ -55,6 +61,8 @@ def build_services(settings: Settings) -> AppServices:
     context_builder = ContextBuilder(runtime_context_config)
     ai_service = AiAnswerService(settings, context_builder, openrouter)
     tldr_service = TldrService(settings, openrouter, runtime_context_config)
+    runtime_stats_config = RuntimeStatsConfig(path=settings.stats_yaml_path)
+    stats_service = StatsService(runtime_stats_config)
     reactions_config = RuntimeReactionsConfig(path=settings.reactions_yaml_path)
     reaction_service = ReactionService(
         settings=settings,
@@ -72,9 +80,11 @@ def build_services(settings: Settings) -> AppServices:
         access_control=access_control,
         ai_service=ai_service,
         tldr_service=tldr_service,
+        stats_service=stats_service,
         reaction_service=reaction_service,
         reaction_poller=reaction_poller,
         runtime_context_config=runtime_context_config,
+        runtime_stats_config=runtime_stats_config,
     )
 
 
@@ -137,6 +147,7 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
             yaml_store=services.yaml_store,
             ai_service=services.ai_service,
             tldr_service=services.tldr_service,
+            stats_service=services.stats_service,
             runtime_config=services.runtime_context_config,
             bot_username_provider=bot_username_provider,
         )
@@ -147,6 +158,10 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
             await handle_tldr_command(ctx, "thread")
         elif parsed.command == "tldr_all":
             await handle_tldr_command(ctx, "all")
+        elif parsed.command == "stats":
+            await handle_stats_command(ctx)
+        elif parsed.command == "help":
+            await handle_help_command(ctx)
         elif parsed.command == "whitelist":
             await handle_whitelist_command(ctx)
         elif parsed.command == "confirm_whitelist":

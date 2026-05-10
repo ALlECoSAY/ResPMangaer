@@ -37,6 +37,16 @@ def test_parse_tldr_all():
     assert p is not None and p.command == "tldr_all" and p.args == "6h"
 
 
+def test_parse_stats():
+    p = parse_command("/stats users 30")
+    assert p is not None and p.command == "stats" and p.args == "users 30"
+
+
+def test_parse_help():
+    p = parse_command("/help")
+    assert p is not None and p.command == "help" and p.args == ""
+
+
 def test_parse_confirm_whitelist():
     p = parse_command("/confirm_whitelist 42")
     assert p is not None and p.command == "confirm_whitelist" and p.args == "42"

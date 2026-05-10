@@ -218,6 +218,256 @@ async def fetch_messages_for_tldr(
     return list(result.scalars().all())
 
 
+def _message_stats_filter(chat_id: int, since: datetime | None):
+    conditions = [TelegramMessage.chat_id == chat_id]
+    if since is not None:
+        conditions.append(TelegramMessage.telegram_date >= since)
+    return conditions
+
+
+async def count_messages(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+) -> int:
+    stmt = select(func.count(TelegramMessage.id)).where(
+        *_message_stats_filter(chat_id, since)
+    )
+    result = await session.execute(stmt)
+    return int(result.scalar_one() or 0)
+
+
+async def count_messages_by_user(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+) -> list[tuple[int, int]]:
+    stmt = (
+        select(TelegramMessage.sender_user_id, func.count(TelegramMessage.id).label("count"))
+        .where(
+            *_message_stats_filter(chat_id, since),
+            TelegramMessage.sender_user_id.is_not(None),
+        )
+        .group_by(TelegramMessage.sender_user_id)
+        .order_by(func.count(TelegramMessage.id).desc())
+    )
+    result = await session.execute(stmt)
+    return [(int(row[0]), int(row[1])) for row in result.all()]
+
+
+async def fetch_user_display_names(
+    session: AsyncSession,
+    user_ids: list[int],
+) -> dict[int, str]:
+    if not user_ids:
+        return {}
+    stmt = select(
+        TelegramUser.id,
+        TelegramUser.username,
+        TelegramUser.first_name,
+        TelegramUser.last_name,
+    ).where(TelegramUser.id.in_(user_ids))
+    result = await session.execute(stmt)
+    labels: dict[int, str] = {}
+    for user_id, username, first_name, last_name in result.all():
+        if username:
+            label = f"@{username}"
+        else:
+            label = " ".join(part for part in (first_name, last_name) if part).strip()
+        labels[int(user_id)] = label or f"user {int(user_id)}"
+    return labels
+
+
+async def count_messages_by_hour(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+) -> dict[int, int]:
+    hour = func.extract("hour", TelegramMessage.telegram_date)
+    stmt = (
+        select(hour.label("hour"), func.count(TelegramMessage.id))
+        .where(*_message_stats_filter(chat_id, since))
+        .group_by(hour)
+        .order_by(hour)
+    )
+    result = await session.execute(stmt)
+    return {int(row[0]): int(row[1]) for row in result.all()}
+
+
+async def count_messages_by_weekday(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+) -> dict[int, int]:
+    weekday = func.extract("dow", TelegramMessage.telegram_date)
+    stmt = (
+        select(weekday.label("weekday"), func.count(TelegramMessage.id))
+        .where(*_message_stats_filter(chat_id, since))
+        .group_by(weekday)
+        .order_by(weekday)
+    )
+    result = await session.execute(stmt)
+    return {int(row[0]): int(row[1]) for row in result.all()}
+
+
+async def count_commands_by_name(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+) -> dict[str, int]:
+    stmt = (
+        select(TelegramMessage.command_name, func.count(TelegramMessage.id))
+        .where(
+            *_message_stats_filter(chat_id, since),
+            TelegramMessage.is_command.is_(True),
+            TelegramMessage.command_name.is_not(None),
+        )
+        .group_by(TelegramMessage.command_name)
+        .order_by(func.count(TelegramMessage.id).desc())
+    )
+    result = await session.execute(stmt)
+    return {str(row[0]): int(row[1]) for row in result.all()}
+
+
+async def count_reactions(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+) -> list[tuple[str, int]]:
+    stmt = (
+        select(TelegramMessageReaction.emoji, func.count(TelegramMessageReaction.id))
+        .join(
+            TelegramMessage,
+            and_(
+                TelegramMessage.chat_id == TelegramMessageReaction.chat_id,
+                TelegramMessage.message_id == TelegramMessageReaction.message_id,
+            ),
+        )
+        .where(*_message_stats_filter(chat_id, since))
+        .group_by(TelegramMessageReaction.emoji)
+        .order_by(func.count(TelegramMessageReaction.id).desc())
+    )
+    result = await session.execute(stmt)
+    return [(str(row[0]), int(row[1])) for row in result.all()]
+
+
+async def top_reacted_messages(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+    limit: int,
+) -> list[tuple[int, int]]:
+    stmt = (
+        select(TelegramMessageReaction.message_id, func.count(TelegramMessageReaction.id))
+        .join(
+            TelegramMessage,
+            and_(
+                TelegramMessage.chat_id == TelegramMessageReaction.chat_id,
+                TelegramMessage.message_id == TelegramMessageReaction.message_id,
+            ),
+        )
+        .where(*_message_stats_filter(chat_id, since))
+        .group_by(TelegramMessageReaction.message_id)
+        .order_by(func.count(TelegramMessageReaction.id).desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return [(int(row[0]), int(row[1])) for row in result.all()]
+
+
+async def fetch_messages_for_word_stats(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+) -> list[str]:
+    stmt = (
+        select(
+            func.coalesce(
+                TelegramMessage.clean_text,
+                TelegramMessage.text,
+                TelegramMessage.caption,
+            )
+        )
+        .where(*_message_stats_filter(chat_id, since))
+        .order_by(TelegramMessage.telegram_date.asc())
+    )
+    result = await session.execute(stmt)
+    return [str(row[0]) for row in result.all() if row[0]]
+
+
+async def count_media_types(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+) -> dict[str, int]:
+    stmt = (
+        select(TelegramMessage.content_type, func.count(TelegramMessage.id))
+        .where(*_message_stats_filter(chat_id, since))
+        .group_by(TelegramMessage.content_type)
+        .order_by(func.count(TelegramMessage.id).desc())
+    )
+    result = await session.execute(stmt)
+    return {str(row[0]): int(row[1]) for row in result.all()}
+
+
+async def count_threads(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+) -> list[tuple[int, int]]:
+    stmt = (
+        select(TelegramMessage.message_thread_id, func.count(TelegramMessage.id))
+        .where(*_message_stats_filter(chat_id, since))
+        .group_by(TelegramMessage.message_thread_id)
+        .order_by(func.count(TelegramMessage.id).desc())
+    )
+    result = await session.execute(stmt)
+    return [(int(row[0]), int(row[1])) for row in result.all()]
+
+
+async def thread_starters(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+) -> list[tuple[int, int]]:
+    stmt = (
+        select(TelegramMessage.sender_user_id, func.count(TelegramMessage.id))
+        .where(
+            *_message_stats_filter(chat_id, since),
+            TelegramMessage.sender_user_id.is_not(None),
+            TelegramMessage.reply_to_message_id.is_(None),
+        )
+        .group_by(TelegramMessage.sender_user_id)
+        .order_by(func.count(TelegramMessage.id).desc())
+    )
+    result = await session.execute(stmt)
+    return [(int(row[0]), int(row[1])) for row in result.all()]
+
+
+async def llm_usage_stats(
+    session: AsyncSession,
+    chat_id: int,
+    since: datetime | None,
+) -> tuple[int, int, float]:
+    token_total = func.coalesce(
+        func.sum(
+            func.coalesce(LlmInteraction.prompt_tokens_estimate, 0)
+            + func.coalesce(LlmInteraction.completion_tokens_estimate, 0)
+        ),
+        0,
+    )
+    stmt = select(
+        func.count(LlmInteraction.id),
+        token_total,
+        func.avg(LlmInteraction.latency_ms),
+    ).where(LlmInteraction.chat_id == chat_id)
+    if since is not None:
+        stmt = stmt.where(LlmInteraction.created_at >= since)
+    result = await session.execute(stmt)
+    calls, tokens, avg_latency = result.one()
+    return int(calls or 0), int(tokens or 0), float(avg_latency or 0.0)
+
+
 async def get_thread_titles(
     session: AsyncSession, chat_id: int
 ) -> dict[int, str | None]:

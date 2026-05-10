@@ -2,30 +2,38 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.auth.access_control import AccessControl
-from app.auth.yaml_store import YamlAccessStore
 from app.bot.commands import parse_command
 from app.bot.formatting import reply_in_same_thread
-from app.config import Settings
 from app.db.session import session_scope
-from app.llm.openrouter_client import OpenRouterError
-from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
-from app.services.ai_answer_service import AiAnswerService
-from app.services.tldr_service import (
-    TldrScope,
-    TldrService,
-    make_tldr_request,
-    parse_tldr_lookback,
-)
-from app.telegram_client.client import TelegramClientProtocol
-from app.telegram_client.types import TgMessage
+from app.services.stats_service import parse_stats_args
 from app.utils.telegram import display_name, message_thread_id_for
 
+if TYPE_CHECKING:
+    from app.auth.access_control import AccessControl
+    from app.auth.yaml_store import YamlAccessStore
+    from app.config import Settings
+    from app.llm.runtime_config import RuntimeContextConfig
+    from app.services.ai_answer_service import AiAnswerService
+    from app.services.stats_service import StatsService
+    from app.services.tldr_service import TldrScope, TldrService
+    from app.telegram_client.client import TelegramClientProtocol
+    from app.telegram_client.types import TgMessage
+
 log = get_logger(__name__)
+
+HELP_TEXT = """Available commands:
+/help - show this command list
+/ai <question> - answer using recent thread/chat context
+/tldr [12h|2d] - summarize the current thread
+/tldr_all [12h|2d] - summarize recent activity across the chat
+/stats [users|words|times|threads|reactions|fun] [days|12h|2d] - show chat statistics
+/whitelist - admin only; reply to a user to start whitelisting
+/confirm_whitelist <user_id> - admin only; confirm a whitelist change"""
 
 
 @dataclass
@@ -37,6 +45,7 @@ class CommandContext:
     yaml_store: YamlAccessStore
     ai_service: AiAnswerService
     tldr_service: TldrService
+    stats_service: StatsService
     runtime_config: RuntimeContextConfig
     bot_username_provider: Callable[[], str | None]
 
@@ -46,18 +55,34 @@ async def _reply(
     text: str,
     *,
     reply_to_message_id: int | None = None,
+    max_chars: int | None = None,
 ) -> None:
     await reply_in_same_thread(
         ctx.client,
         ctx.message,
         text,
-        ctx.runtime_config.max_reply_chars,
+        max_chars or ctx.runtime_config.max_reply_chars,
         reply_to_message_id=reply_to_message_id,
     )
 
 
 def _parsed_command(ctx: CommandContext):
     return parse_command(ctx.message.text, ctx.bot_username_provider())
+
+
+def _is_openrouter_error(exc: Exception) -> bool:
+    return (
+        exc.__class__.__name__ == "OpenRouterError"
+        and exc.__class__.__module__ == "app.llm.openrouter_client"
+    )
+
+
+async def handle_help_command(ctx: CommandContext) -> None:
+    await _reply(
+        ctx,
+        HELP_TEXT,
+        reply_to_message_id=ctx.message.message_id,
+    )
 
 
 async def handle_ai_command(ctx: CommandContext) -> None:
@@ -103,13 +128,6 @@ async def handle_ai_command(ctx: CommandContext) -> None:
             response.text,
             reply_to_message_id=ctx.message.message_id,
         )
-    except OpenRouterError as exc:
-        log.error("ai.failed", error=str(exc))
-        await _reply(
-            ctx,
-            "I could not get an AI response right now. Try again later or use a smaller question.",
-            reply_to_message_id=ctx.message.message_id,
-        )
     except SQLAlchemyError as exc:
         log.error("ai.db_error", error=str(exc))
         await _reply(
@@ -117,9 +135,20 @@ async def handle_ai_command(ctx: CommandContext) -> None:
             "I could not get an AI response right now. Try again later.",
             reply_to_message_id=ctx.message.message_id,
         )
+    except Exception as exc:
+        if not _is_openrouter_error(exc):
+            raise
+        log.error("ai.failed", error=str(exc))
+        await _reply(
+            ctx,
+            "I could not get an AI response right now. Try again later or use a smaller question.",
+            reply_to_message_id=ctx.message.message_id,
+        )
 
 
 async def handle_tldr_command(ctx: CommandContext, scope: TldrScope) -> None:
+    from app.services.tldr_service import make_tldr_request, parse_tldr_lookback
+
     user_id = ctx.message.from_user.id if ctx.message.from_user else None
     decision = await ctx.access_control.can_use_ai_commands(user_id)
     if not decision.allowed:
@@ -149,12 +178,95 @@ async def handle_tldr_command(ctx: CommandContext, scope: TldrScope) -> None:
             return
         assert response is not None
         await _reply(ctx, response.text)
-    except OpenRouterError as exc:
-        log.error(f"{log_event}.failed", error=str(exc))
-        await _reply(ctx, "I could not summarize the recent activity right now.")
     except SQLAlchemyError as exc:
         log.error(f"{log_event}.db_error", error=str(exc))
         await _reply(ctx, "I could not summarize the recent activity right now.")
+    except Exception as exc:
+        if not _is_openrouter_error(exc):
+            raise
+        log.error(f"{log_event}.failed", error=str(exc))
+        await _reply(ctx, "I could not summarize the recent activity right now.")
+
+
+async def handle_stats_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_use_ai_commands(user_id)
+    if not decision.allowed:
+        await _reply(ctx, decision.reason or "denied")
+        return
+
+    if not ctx.stats_service.enabled:
+        await _reply(ctx, "Stats are disabled right now.")
+        return
+
+    parsed = _parsed_command(ctx)
+    args = parsed.args if parsed else ""
+    request = parse_stats_args(
+        args,
+        default_lookback_days=ctx.stats_service.default_lookback_days,
+    )
+    if isinstance(request, str):
+        await _reply(
+            ctx,
+            request,
+            reply_to_message_id=ctx.message.message_id,
+            max_chars=ctx.stats_service.max_message_chars,
+        )
+        return
+
+    try:
+        async with session_scope() as session:
+            if request.subcommand == "users":
+                lines = await ctx.stats_service.user_stats(
+                    session,
+                    ctx.message.chat.id,
+                    request.lookback,
+                )
+            elif request.subcommand == "words":
+                lines = await ctx.stats_service.word_stats(
+                    session,
+                    ctx.message.chat.id,
+                    request.lookback,
+                )
+            elif request.subcommand == "times":
+                lines = await ctx.stats_service.time_stats(
+                    session,
+                    ctx.message.chat.id,
+                    request.lookback,
+                )
+            elif request.subcommand == "threads":
+                lines = await ctx.stats_service.thread_stats(
+                    session,
+                    ctx.message.chat.id,
+                    request.lookback,
+                )
+            elif request.subcommand == "reactions":
+                lines = await ctx.stats_service.reaction_stats(
+                    session,
+                    ctx.message.chat.id,
+                    request.lookback,
+                )
+            elif request.subcommand == "fun":
+                lines = await ctx.stats_service.fun_stats(
+                    session,
+                    ctx.message.chat.id,
+                    request.lookback,
+                )
+            else:
+                lines = await ctx.stats_service.summary(
+                    session,
+                    ctx.message.chat.id,
+                    request.lookback,
+                )
+        await _reply(
+            ctx,
+            "\n".join(lines),
+            reply_to_message_id=ctx.message.message_id,
+            max_chars=ctx.stats_service.max_message_chars,
+        )
+    except SQLAlchemyError as exc:
+        log.error("stats.db_error", error=str(exc))
+        await _reply(ctx, "I could not compute stats right now.")
 
 
 async def handle_whitelist_command(ctx: CommandContext) -> None:

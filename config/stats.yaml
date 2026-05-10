@@ -1,0 +1,9 @@
+version: 1
+stats:
+  enabled: true
+  default_lookback_days: 7
+  top_n_users: 10
+  top_n_words: 20
+  top_n_threads: 5
+  report_schedule: null
+  max_message_chars: 3900

@@ -16,11 +16,13 @@ cp config/admins.yaml.example config/admins.yaml
 cp config/whitelist.yaml.example config/whitelist.yaml
 cp config/context_limits.yaml.example config/context_limits.yaml
 cp config/reactions.yaml.example config/reactions.yaml
+cp config/stats.yaml.example config/stats.yaml
 ```
 
 Bot behavior such as reply size, context budget, `/ai` message caps, and `/tldr`
 lookback/gap limits lives in `config/context_limits.yaml`. Keep `.env` for
-secrets, connection strings, feature flags, and YAML file paths.
+secrets, connection strings, feature flags, and YAML file paths. Chat statistics
+settings live in `config/stats.yaml`.
 
 ## Run It
 
@@ -60,6 +62,7 @@ cp config/admins.yaml.example config/admins.yaml
 cp config/whitelist.yaml.example config/whitelist.yaml
 cp config/context_limits.yaml.example config/context_limits.yaml
 cp config/reactions.yaml.example config/reactions.yaml
+cp config/stats.yaml.example config/stats.yaml
 
 # Set API credentials, phone, allowlisted chats, and OpenRouter key.
 docker compose build
@@ -71,8 +74,40 @@ docker compose up -d
 
 - `/ai <question>` answers using current thread context plus relevant cross-thread context.
 - `/tldr [options]` summarizes recent activity in the same thread or across the chat.
+- `/stats [subcommand] [days|12h|2d]` reports chat statistics for a recent window.
+- `/help` lists available commands.
 - `/whitelist` is admin-only and must be used as a reply to the target user's message.
 - `/confirm_whitelist <user_id>` is admin-only and completes the whitelist write.
+
+### Stats Commands
+
+Stats use the messages, commands, reactions, threads, and LLM interaction rows
+already stored in PostgreSQL. They do not call the LLM.
+
+- `/stats` shows a compact summary across users, words, media, time, reactions, commands, and LLM usage.
+- `/stats users [days]` ranks top chatters and the quiet corner.
+- `/stats words [days]` shows common words, message emojis, and shared domains.
+- `/stats times [days]` prints hourly and weekday activity bars.
+- `/stats threads [days]` ranks active topics and thread starters.
+- `/stats reactions [days]` shows reaction emoji counts and reaction magnets.
+- `/stats fun [days]` gives playful awards such as Chatty McChatface and Buzzword badge.
+
+Edit `config/stats.yaml` (hot-reloads on file change):
+
+```yaml
+stats:
+  enabled: true
+  default_lookback_days: 7
+  top_n_users: 10
+  top_n_words: 20
+  top_n_threads: 5
+  max_message_chars: 3900
+  report_schedule: null
+```
+
+The `report_schedule` field is reserved for automatic weekly/monthly reports;
+manual `/stats` commands are available in both user-API and allowlisted chat
+deployments.
 
 ## Reactions Feature
 

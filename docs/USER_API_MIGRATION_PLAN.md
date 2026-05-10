@@ -5,6 +5,7 @@
 - [x] Waves 0-9 implemented in the codebase.
 - [~] Wave 10 test coverage expanded, but full runtime validation is still limited by this sandbox environment.
 - [x] Wave 11 optional aiogram removal completed after dual-mode stabilization.
+- [x] `/stats` is implemented on the framework-independent command path, so it works through the Telethon user-API runtime.
 
 ## 0. Context
 
