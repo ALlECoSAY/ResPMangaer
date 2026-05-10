@@ -92,13 +92,13 @@ async def test_summary_formats_highlights(monkeypatch):
     monkeypatch.setattr(stats_module, "count_commands_by_name", _count_commands_by_name)
     monkeypatch.setattr(stats_module, "llm_usage_stats", _llm_usage_stats)
 
-    lines = await StatsService(_FakeStatsConfig()).summary(
+    report = await StatsService(_FakeStatsConfig()).summary(
         session=None,
         chat_id=1,
         lookback=timedelta(days=7),
     )
 
-    text = "\n".join(lines)
+    text = "\n".join([*report.visible_lines, *report.graph_lines, *report.detail_lines])
     assert "Messages: 5" in text
     assert "Top chatter: @alice (3)" in text
     assert "Word of the window: hello (2)" in text
@@ -118,12 +118,82 @@ async def test_word_stats_counts_words_emojis_and_domains(monkeypatch):
         _fetch_messages_for_word_stats,
     )
 
-    lines = await StatsService(_FakeStatsConfig()).word_stats(
+    report = await StatsService(_FakeStatsConfig()).word_stats(
         session=None,
         chat_id=1,
         lookback=timedelta(days=1),
     )
 
-    text = "\n".join(lines)
+    text = "\n".join([*report.visible_lines, *report.graph_lines, *report.detail_lines])
     assert "launch" in text
     assert "example.com" in text
+
+
+async def test_user_stats_includes_graph_and_username_link(monkeypatch):
+    async def _count_messages_by_user(session, chat_id, since):
+        return [(100, 12), (200, 6), (300, 3)]
+
+    async def _fetch_user_display_names(session, user_ids):
+        return {100: "@alice", 200: "Bob", 300: "Carol"}
+
+    monkeypatch.setattr(stats_module, "count_messages_by_user", _count_messages_by_user)
+    monkeypatch.setattr(stats_module, "fetch_user_display_names", _fetch_user_display_names)
+
+    report = await StatsService(_FakeStatsConfig()).user_stats(
+        session=None,
+        chat_id=1,
+        lookback=timedelta(days=1),
+    )
+
+    assert any("█" in line for line in report.graph_lines)
+    assert report.links[0].url == "https://t.me/alice"
+    assert all("tg://user?id" not in link.url for link in report.links)
+
+
+async def test_time_stats_includes_sparkline(monkeypatch):
+    async def _count_messages_by_hour(session, chat_id, since):
+        return {0: 1, 1: 2, 2: 4}
+
+    async def _count_messages_by_weekday(session, chat_id, since):
+        return {1: 4, 2: 8}
+
+    monkeypatch.setattr(stats_module, "count_messages_by_hour", _count_messages_by_hour)
+    monkeypatch.setattr(stats_module, "count_messages_by_weekday", _count_messages_by_weekday)
+
+    report = await StatsService(_FakeStatsConfig()).time_stats(
+        session=None,
+        chat_id=1,
+        lookback=timedelta(days=1),
+    )
+
+    assert any(line.startswith("Hours: ") for line in report.graph_lines)
+    assert any("Mon" in line and "█" in line for line in report.graph_lines)
+
+
+async def test_reaction_stats_links_magnets(monkeypatch):
+    from app.db.repositories import ReactedMessageStat
+
+    async def _count_reactions(session, chat_id, since):
+        return [("🔥", 5), ("👍", 2)]
+
+    async def _top_reacted_messages(session, chat_id, since, limit):
+        return [
+            ReactedMessageStat(
+                message_id=50,
+                message_thread_id=12,
+                count=5,
+                preview="a spicy message",
+            )
+        ]
+
+    monkeypatch.setattr(stats_module, "count_reactions", _count_reactions)
+    monkeypatch.setattr(stats_module, "top_reacted_messages", _top_reacted_messages)
+
+    report = await StatsService(_FakeStatsConfig()).reaction_stats(
+        session=None,
+        chat_id=-1001234567890,
+        lookback=timedelta(days=1),
+    )
+
+    assert "a spicy message" in "\n".join(report.visible_lines)
+    assert report.links[0].url == "https://t.me/c/1234567890/12/50"

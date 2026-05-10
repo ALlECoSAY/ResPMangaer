@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.telegram_client.types import TgMessage, TgMessageReactionSnapshot
 
@@ -16,6 +16,7 @@ class TelegramClientProtocol(Protocol):
         *,
         reply_to_message_id: int | None = None,
         message_thread_id: int | None = None,
+        formatting_entities: list[Any] | None = None,
     ) -> TgMessage | None:
         ...
 

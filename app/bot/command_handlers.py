@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -10,6 +10,8 @@ from app.bot.commands import parse_command
 from app.bot.formatting import reply_in_same_thread
 from app.db.session import session_scope
 from app.logging_config import get_logger
+from app.services.stats_renderer import StatsRenderer
+from app.services.stats_report import StatsReport
 from app.services.stats_service import parse_stats_args
 from app.utils.telegram import display_name, message_thread_id_for
 
@@ -56,6 +58,7 @@ async def _reply(
     *,
     reply_to_message_id: int | None = None,
     max_chars: int | None = None,
+    formatting_entities: list[Any] | None = None,
 ) -> None:
     await reply_in_same_thread(
         ctx.client,
@@ -63,6 +66,7 @@ async def _reply(
         text,
         max_chars or ctx.runtime_config.max_reply_chars,
         reply_to_message_id=reply_to_message_id,
+        formatting_entities=formatting_entities,
     )
 
 
@@ -217,52 +221,65 @@ async def handle_stats_command(ctx: CommandContext) -> None:
     try:
         async with session_scope() as session:
             if request.subcommand == "users":
-                lines = await ctx.stats_service.user_stats(
+                report = await ctx.stats_service.user_stats(
                     session,
                     ctx.message.chat.id,
                     request.lookback,
                 )
             elif request.subcommand == "words":
-                lines = await ctx.stats_service.word_stats(
+                report = await ctx.stats_service.word_stats(
                     session,
                     ctx.message.chat.id,
                     request.lookback,
                 )
             elif request.subcommand == "times":
-                lines = await ctx.stats_service.time_stats(
+                report = await ctx.stats_service.time_stats(
                     session,
                     ctx.message.chat.id,
                     request.lookback,
                 )
             elif request.subcommand == "threads":
-                lines = await ctx.stats_service.thread_stats(
+                report = await ctx.stats_service.thread_stats(
                     session,
                     ctx.message.chat.id,
                     request.lookback,
                 )
             elif request.subcommand == "reactions":
-                lines = await ctx.stats_service.reaction_stats(
+                report = await ctx.stats_service.reaction_stats(
                     session,
                     ctx.message.chat.id,
                     request.lookback,
+                    chat_username=ctx.message.chat.username,
                 )
             elif request.subcommand == "fun":
-                lines = await ctx.stats_service.fun_stats(
+                report = await ctx.stats_service.fun_stats(
                     session,
                     ctx.message.chat.id,
                     request.lookback,
                 )
             else:
-                lines = await ctx.stats_service.summary(
+                report = await ctx.stats_service.summary(
                     session,
                     ctx.message.chat.id,
                     request.lookback,
                 )
+        if not isinstance(report, StatsReport):
+            report = StatsReport(
+                title="Stats",
+                visible_lines=list(report),
+                graph_lines=[],
+                detail_lines=[],
+            )
+        rendered = StatsRenderer().render(
+            report,
+            max_chars=ctx.stats_service.max_message_chars,
+        )
         await _reply(
             ctx,
-            "\n".join(lines),
+            rendered.text,
             reply_to_message_id=ctx.message.message_id,
             max_chars=ctx.stats_service.max_message_chars,
+            formatting_entities=rendered.entities,
         )
     except SQLAlchemyError as exc:
         log.error("stats.db_error", error=str(exc))

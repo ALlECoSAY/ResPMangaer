@@ -39,6 +39,21 @@ class UserInput:
 
 
 @dataclass(frozen=True)
+class UserDisplay:
+    user_id: int
+    username: str | None
+    display_name: str
+
+
+@dataclass(frozen=True)
+class ReactedMessageStat:
+    message_id: int
+    message_thread_id: int
+    count: int
+    preview: str | None
+
+
+@dataclass(frozen=True)
 class MessageInput:
     chat_id: int
     message_id: int
@@ -337,6 +352,14 @@ async def fetch_user_display_names(
     session: AsyncSession,
     user_ids: list[int],
 ) -> dict[int, str]:
+    displays = await fetch_user_displays(session, user_ids)
+    return {user_id: display.display_name for user_id, display in displays.items()}
+
+
+async def fetch_user_displays(
+    session: AsyncSession,
+    user_ids: list[int],
+) -> dict[int, UserDisplay]:
     if not user_ids:
         return {}
     stmt = select(
@@ -346,14 +369,19 @@ async def fetch_user_display_names(
         TelegramUser.last_name,
     ).where(TelegramUser.id.in_(user_ids))
     result = await session.execute(stmt)
-    labels: dict[int, str] = {}
+    displays: dict[int, UserDisplay] = {}
     for user_id, username, first_name, last_name in result.all():
         if username:
             label = f"@{username}"
         else:
             label = " ".join(part for part in (first_name, last_name) if part).strip()
-        labels[int(user_id)] = label or f"user {int(user_id)}"
-    return labels
+        display_name = label or f"user {int(user_id)}"
+        displays[int(user_id)] = UserDisplay(
+            user_id=int(user_id),
+            username=str(username) if username else None,
+            display_name=display_name,
+        )
+    return displays
 
 
 async def count_messages_by_hour(
@@ -434,9 +462,19 @@ async def top_reacted_messages(
     chat_id: int,
     since: datetime | None,
     limit: int,
-) -> list[tuple[int, int]]:
+) -> list[ReactedMessageStat]:
+    preview = func.coalesce(
+        TelegramMessage.clean_text,
+        TelegramMessage.text,
+        TelegramMessage.caption,
+    )
     stmt = (
-        select(TelegramMessageReaction.message_id, func.count(TelegramMessageReaction.id))
+        select(
+            TelegramMessageReaction.message_id,
+            TelegramMessage.message_thread_id,
+            func.count(TelegramMessageReaction.id),
+            preview,
+        )
         .join(
             TelegramMessage,
             and_(
@@ -445,12 +483,24 @@ async def top_reacted_messages(
             ),
         )
         .where(*_message_stats_filter(chat_id, since))
-        .group_by(TelegramMessageReaction.message_id)
+        .group_by(
+            TelegramMessageReaction.message_id,
+            TelegramMessage.message_thread_id,
+            preview,
+        )
         .order_by(func.count(TelegramMessageReaction.id).desc())
         .limit(limit)
     )
     result = await session.execute(stmt)
-    return [(int(row[0]), int(row[1])) for row in result.all()]
+    return [
+        ReactedMessageStat(
+            message_id=int(row[0]),
+            message_thread_id=int(row[1]),
+            count=int(row[2]),
+            preview=str(row[3]) if row[3] else None,
+        )
+        for row in result.all()
+    ]
 
 
 async def fetch_messages_for_word_stats(

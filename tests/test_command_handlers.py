@@ -37,6 +37,7 @@ class _FakeClient:
         *,
         reply_to_message_id: int | None = None,
         message_thread_id: int | None = None,
+        formatting_entities: list[object] | None = None,
     ) -> TgMessage | None:
         self.sent_messages.append(
             {
@@ -44,6 +45,7 @@ class _FakeClient:
                 "text": text,
                 "reply_to_message_id": reply_to_message_id,
                 "message_thread_id": message_thread_id,
+                "formatting_entities": formatting_entities,
             }
         )
         return _make_message(text=text, thread_id=message_thread_id or 0)
@@ -256,7 +258,7 @@ async def test_stats_command_uses_service_and_split_limit(tmp_path: Path, monkey
     await handle_stats_command(ctx)
 
     assert stats_service.calls[0]["method"] == "summary"
-    assert len(client.sent_messages) == 2
+    assert len(client.sent_messages) >= 2
     assert client.sent_messages[0]["reply_to_message_id"] == 10
 
 

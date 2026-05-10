@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from app.telegram_client.client import TelegramClientProtocol
 from app.telegram_client.types import TgMessage
 
@@ -36,8 +38,11 @@ async def reply_in_same_thread(
     text: str,
     max_chars: int,
     reply_to_message_id: int | None = None,
+    formatting_entities: list[Any] | None = None,
 ) -> list[TgMessage]:
     chunks = split_for_telegram(text, max_chars)
+    if formatting_entities and len(chunks) > 1:
+        formatting_entities = None
     sent: list[TgMessage] = []
     for index, chunk in enumerate(chunks):
         sent_message = await client.send_message(
@@ -45,6 +50,7 @@ async def reply_in_same_thread(
             chunk,
             reply_to_message_id=reply_to_message_id if index == 0 else None,
             message_thread_id=message.message_thread_id or None,
+            formatting_entities=formatting_entities if index == 0 else None,
         )
         if sent_message is not None:
             sent.append(sent_message)

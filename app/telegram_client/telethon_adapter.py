@@ -240,6 +240,7 @@ class TelethonUserClient(TelegramClientProtocol):
         *,
         reply_to_message_id: int | None = None,
         message_thread_id: int | None = None,
+        formatting_entities: list[Any] | None = None,
     ) -> TgMessage | None:
         reply_target = reply_to_message_id
         if reply_target is None and message_thread_id is not None and message_thread_id > 0:
@@ -248,6 +249,7 @@ class TelethonUserClient(TelegramClientProtocol):
             entity=chat_id,
             message=text,
             reply_to=reply_target,
+            formatting_entities=formatting_entities,
         )
         return await self.message_to_tg_message(sent)
 
