@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from app.db.repositories import UserDisplay
 from app.services import stats_service as stats_module
 from app.services.stats_service import StatsService, parse_stats_args
 
@@ -49,8 +50,11 @@ async def test_summary_formats_highlights(monkeypatch):
     async def _count_messages_by_user(session, chat_id, since):
         return [(100, 3), (200, 2)]
 
-    async def _fetch_user_display_names(session, user_ids):
-        return {100: "@alice", 200: "@bob"}
+    async def _fetch_user_displays(session, user_ids):
+        return {
+            100: UserDisplay(user_id=100, username="alice", display_name="Alice"),
+            200: UserDisplay(user_id=200, username="bob", display_name="Bob"),
+        }
 
     async def _fetch_messages_for_word_stats(session, chat_id, since):
         return ["hello project hello", "see https://example.com"]
@@ -75,7 +79,7 @@ async def test_summary_formats_highlights(monkeypatch):
 
     monkeypatch.setattr(stats_module, "count_messages", _count_messages)
     monkeypatch.setattr(stats_module, "count_messages_by_user", _count_messages_by_user)
-    monkeypatch.setattr(stats_module, "fetch_user_display_names", _fetch_user_display_names)
+    monkeypatch.setattr(stats_module, "fetch_user_displays", _fetch_user_displays)
     monkeypatch.setattr(
         stats_module,
         "fetch_messages_for_word_stats",
@@ -100,9 +104,11 @@ async def test_summary_formats_highlights(monkeypatch):
 
     text = "\n".join([*report.visible_lines, *report.graph_lines, *report.detail_lines])
     assert "Messages: 5" in text
-    assert "Top chatter: @alice (3)" in text
+    assert "Top chatter: Alice (3)" in text
+    assert "@alice" not in text
     assert "Word of the window: hello (2)" in text
     assert "Top command: /ai (2)" in text
+    assert any(link.url == "https://t.me/alice" for link in report.links)
 
 
 async def test_word_stats_counts_words_emojis_and_domains(monkeypatch):
@@ -133,11 +139,15 @@ async def test_user_stats_includes_graph_and_username_link(monkeypatch):
     async def _count_messages_by_user(session, chat_id, since):
         return [(100, 12), (200, 6), (300, 3)]
 
-    async def _fetch_user_display_names(session, user_ids):
-        return {100: "@alice", 200: "Bob", 300: "Carol"}
+    async def _fetch_user_displays(session, user_ids):
+        return {
+            100: UserDisplay(user_id=100, username="alice", display_name="Alice"),
+            200: UserDisplay(user_id=200, username=None, display_name="Bob"),
+            300: UserDisplay(user_id=300, username=None, display_name="Carol"),
+        }
 
     monkeypatch.setattr(stats_module, "count_messages_by_user", _count_messages_by_user)
-    monkeypatch.setattr(stats_module, "fetch_user_display_names", _fetch_user_display_names)
+    monkeypatch.setattr(stats_module, "fetch_user_displays", _fetch_user_displays)
 
     report = await StatsService(_FakeStatsConfig()).user_stats(
         session=None,
@@ -146,8 +156,14 @@ async def test_user_stats_includes_graph_and_username_link(monkeypatch):
     )
 
     assert any("█" in line for line in report.graph_lines)
-    assert report.links[0].url == "https://t.me/alice"
+    assert any(link.url == "https://t.me/alice" for link in report.links)
     assert all("tg://user?id" not in link.url for link in report.links)
+    all_lines = [*report.visible_lines, *report.graph_lines, *report.detail_lines]
+    assert all("@alice" not in line for line in all_lines)
+    visible_sections = {link.section for link in report.links}
+    assert "visible" in visible_sections
+    assert "graph" in visible_sections
+    assert "detail" in visible_sections
 
 
 async def test_time_stats_includes_sparkline(monkeypatch):

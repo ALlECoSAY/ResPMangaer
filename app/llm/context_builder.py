@@ -13,6 +13,7 @@ from app.db.repositories import (
     get_thread_titles,
 )
 from app.llm.runtime_config import RuntimeContextConfig
+from app.utils.telegram import safe_sender_label
 
 DECISION_KEYWORDS = (
     "decided",
@@ -55,7 +56,7 @@ def _to_context_message(row: TelegramMessage) -> ContextMessage:
     return ContextMessage(
         chat_id=row.chat_id,
         message_thread_id=row.message_thread_id,
-        sender=row.sender_display_name or "anon",
+        sender=safe_sender_label(row.sender_display_name),
         text=body,
         timestamp=row.telegram_date,
     )

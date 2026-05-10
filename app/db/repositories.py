@@ -371,15 +371,17 @@ async def fetch_user_displays(
     result = await session.execute(stmt)
     displays: dict[int, UserDisplay] = {}
     for user_id, username, first_name, last_name in result.all():
-        if username:
-            label = f"@{username}"
+        name_parts = [part for part in (first_name, last_name) if part]
+        if name_parts:
+            label = " ".join(name_parts)
+        elif username:
+            label = str(username)
         else:
-            label = " ".join(part for part in (first_name, last_name) if part).strip()
-        display_name = label or f"user {int(user_id)}"
+            label = f"user {int(user_id)}"
         displays[int(user_id)] = UserDisplay(
             user_id=int(user_id),
             username=str(username) if username else None,
-            display_name=display_name,
+            display_name=label,
         )
     return displays
 

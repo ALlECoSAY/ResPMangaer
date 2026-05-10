@@ -15,7 +15,7 @@ from app.services.stats_image_renderer import StatsImageRenderer
 from app.services.stats_renderer import StatsRenderer
 from app.services.stats_report import StatsReport
 from app.services.stats_service import parse_stats_args
-from app.utils.telegram import display_name, message_thread_id_for
+from app.utils.telegram import display_name, message_thread_id_for, strip_notification_mentions
 
 if TYPE_CHECKING:
     from app.auth.access_control import AccessControl
@@ -174,7 +174,7 @@ async def handle_ai_command(ctx: CommandContext) -> None:
             )
         await _reply(
             ctx,
-            response.text,
+            strip_notification_mentions(response.text),
             reply_to_message_id=ctx.message.message_id,
         )
     except SQLAlchemyError as exc:
@@ -226,7 +226,7 @@ async def handle_tldr_command(ctx: CommandContext, scope: TldrScope) -> None:
             await _reply(ctx, friendly)
             return
         assert response is not None
-        await _reply(ctx, response.text)
+        await _reply(ctx, strip_notification_mentions(response.text))
     except SQLAlchemyError as exc:
         log.error(f"{log_event}.db_error", error=str(exc))
         await _reply(ctx, "I could not summarize the recent activity right now.")

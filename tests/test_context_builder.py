@@ -115,3 +115,15 @@ async def test_context_respects_char_budget(patched_repo, tmp_path: Path):
         session=None, chat_id=1, message_thread_id=5, question="hi"
     )
     assert len(ctx.context_text) <= 1500  # budget + small headers
+
+
+async def test_context_strips_at_username_from_stored_sender(patched_repo):
+    base = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    patched_repo["same"] = [_row(5, base, "hello", sender="@alice")]
+    patched_repo["cross"] = []
+    patched_repo["titles"] = {}
+    ctx = await _builder().build_for_ai(
+        session=None, chat_id=1, message_thread_id=5, question="hi"
+    )
+    assert "@alice" not in ctx.context_text
+    assert "alice" in ctx.context_text

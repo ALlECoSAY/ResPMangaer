@@ -28,6 +28,7 @@ from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
 from app.telegram_client.client import TelegramClientProtocol
 from app.telegram_client.types import TgMessageReactionSnapshot, TgReactionUpdate
+from app.utils.telegram import safe_sender_label, strip_notification_mentions
 
 log = get_logger(__name__)
 
@@ -46,6 +47,8 @@ Your job:
 - Stay relevant to the reacted message; treat the surrounding messages as
   background only.
 - Avoid being preachy or generic. Be specific to what was actually said.
+- Never write @username mentions. Refer to people by their plain display name
+  (no leading "@") so the bot never triggers Telegram notifications.
 """
 
 
@@ -77,7 +80,7 @@ def _diff_reactions(
 
 def _format_context_message(row: TelegramMessage, marker: str = "") -> str:
     ts = row.telegram_date.strftime("%Y-%m-%d %H:%M")
-    sender = row.sender_display_name or "anon"
+    sender = safe_sender_label(row.sender_display_name)
     body = (row.clean_text or row.text or row.caption or "").strip()
     if not body:
         body = f"({row.content_type})"
@@ -599,6 +602,7 @@ class ReactionService:
         target_message_id: int,
         text: str,
     ) -> None:
+        text = strip_notification_mentions(text)
         chunks = split_for_telegram(text, self._runtime_config.max_reply_chars)
         for index, chunk in enumerate(chunks):
             kwargs: dict = {"chat_id": chat_id, "text": chunk}

@@ -680,3 +680,39 @@ async def test_cooldown_blocks_second_reply(patched_repo):
     await svc.handle_reaction_update(_FakeSession(), tg_client, e2)
     assert len(client.calls) == 1
     tg_client.send_message.assert_awaited_once()
+
+
+async def test_reaction_prompt_strips_at_username_in_sender(patched_repo):
+    cfg = _FakeReactionsConfig(min_distinct_users=3, reply_chance=1.0)
+    patched_repo.distinct_users = 3
+    target = _make_target_row(10, thread_id=42)
+    target.sender_display_name = "@alice"
+    patched_repo.target_message = target
+    svc, client = _make_service(config=cfg, rng_value=0.0)
+    tg_client = _FakeTelegramClient()
+    event = _make_event(
+        chat_id=1, message_id=10, user_id=99, old=[], new=["🔥"]
+    )
+    await svc.handle_reaction_update(_FakeSession(), tg_client, event)
+
+    assert len(client.calls) == 1
+    prompt = client.calls[0][1]
+    assert "@alice" not in prompt
+    assert "alice" in prompt
+
+
+async def test_reaction_reply_strips_at_username_before_sending(patched_repo):
+    cfg = _FakeReactionsConfig(min_distinct_users=3, reply_chance=1.0)
+    patched_repo.distinct_users = 3
+    patched_repo.target_message = _make_target_row(10, thread_id=42)
+    svc, client = _make_service(config=cfg, rng_value=0.0)
+    client._response_text = "Nice one, @alice — agreed."
+    tg_client = _FakeTelegramClient()
+    event = _make_event(
+        chat_id=1, message_id=10, user_id=99, old=[], new=["🔥"]
+    )
+    await svc.handle_reaction_update(_FakeSession(), tg_client, event)
+
+    sent_text = tg_client.send_message.await_args.kwargs["text"]
+    assert "@alice" not in sent_text
+    assert "alice" in sent_text

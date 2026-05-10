@@ -297,6 +297,49 @@ async def test_direct_reply_to_activity_message_answers(monkeypatch):
     assert tg_client.send_message.await_args.kwargs["reply_to_message_id"] == 120
 
 
+async def test_activity_prompt_strips_at_username_in_sender(monkeypatch):
+    row = _make_row(102, text="does this plan make sense?")
+    row.sender_display_name = "@alice"
+    state = _FakeRepoState(count=3, rows=[row])
+    _patch_repo(monkeypatch, state)
+    svc, llm = _make_service(config=_FakeActivityConfig(), rng_value=0.0)
+    tg_client = _FakeTelegramClient()
+
+    await svc.maybe_trigger_random_reply(
+        _FakeSession(),
+        tg_client,
+        chat_id=1,
+        message_thread_id=42,
+    )
+
+    assert len(llm.calls) == 1
+    prompt = llm.calls[0][1]
+    assert "@alice" not in prompt
+    assert "alice" in prompt
+
+
+async def test_activity_reply_strips_at_username_before_sending(monkeypatch):
+    state = _FakeRepoState(
+        count=3,
+        rows=[_make_row(102, text="does this plan make sense?")],
+    )
+    _patch_repo(monkeypatch, state)
+    svc, llm = _make_service(config=_FakeActivityConfig(), rng_value=0.0)
+    llm._response_text = "Nice point, @alice — agreed."
+    tg_client = _FakeTelegramClient()
+
+    await svc.maybe_trigger_random_reply(
+        _FakeSession(),
+        tg_client,
+        chat_id=1,
+        message_thread_id=42,
+    )
+
+    sent_text = tg_client.send_message.await_args.kwargs["text"]
+    assert "@alice" not in sent_text
+    assert "alice" in sent_text
+
+
 async def test_plain_follow_up_respects_window_and_chance(monkeypatch):
     last_reply_at = datetime(2026, 5, 10, 12, 0, tzinfo=UTC)
     state = _FakeRepoState(

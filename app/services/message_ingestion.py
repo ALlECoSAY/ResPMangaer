@@ -15,7 +15,7 @@ from app.db.repositories import (
 )
 from app.logging_config import get_logger
 from app.telegram_client.types import TgMessage
-from app.utils.telegram import clean_command_text, display_name
+from app.utils.telegram import clean_command_text, user_plain_label
 
 log = get_logger(__name__)
 
@@ -75,7 +75,7 @@ async def ingest_message(
             ),
         )
 
-    sender_name = display_name(message.from_user) if message.from_user else None
+    sender_name = user_plain_label(message.from_user) if message.from_user else None
     clean = (
         clean_command_text(raw_text, command_name, bot_username) or None
         if raw_text

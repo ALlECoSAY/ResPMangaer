@@ -21,7 +21,6 @@ from app.db.repositories import (
     count_reactions,
     count_threads,
     fetch_messages_for_word_stats,
-    fetch_user_display_names,
     fetch_user_displays,
     get_thread_titles,
     llm_usage_stats,
@@ -179,7 +178,15 @@ class StatsService:
             )
 
         users = await count_messages_by_user(session, chat_id, since)
-        labels = await self._labels(session, [user_id for user_id, _count in users[:5]])
+        top_user_ids = [user_id for user_id, _count in users[:5]]
+        displays = await self._user_displays(session, top_user_ids)
+        labels = {
+            user_id: displays.get(
+                user_id,
+                UserDisplay(user_id=user_id, username=None, display_name=f"user {user_id}"),
+            ).display_name
+            for user_id in top_user_ids
+        }
         words = self._word_counter(await fetch_messages_for_word_stats(session, chat_id, since))
         media = await count_media_types(session, chat_id, since)
         hours = await count_messages_by_hour(session, chat_id, since)
@@ -192,7 +199,9 @@ class StatsService:
             f"Messages: {total}",
             f"Active senders: {len(users)}",
         ]
+        top_chatter_idx: int | None = None
         if users:
+            top_chatter_idx = len(visible_lines)
             visible_lines.append(f"Top chatter: {labels[users[0][0]]} ({users[0][1]})")
         if words:
             word, count = words.most_common(1)[0]
@@ -211,14 +220,16 @@ class StatsService:
             visible_lines.append(f"Favorite reaction: {emoji} ({count})")
 
         graph_lines: list[str] = []
+        graph_link_rows: list[tuple[int, int]] = []
         if hours:
             graph_lines.append(
                 "Hours: " + sparkline([hours.get(hour, 0) for hour in range(24)])
             )
         elif users:
+            graph_link_rows = list(users[:3])
             graph_lines.extend(
                 bar_lines(
-                    [(labels[user_id], count) for user_id, count in users[:3]],
+                    [(labels[user_id], count) for user_id, count in graph_link_rows],
                     width=8,
                 )
             )
@@ -231,11 +242,27 @@ class StatsService:
             detail_lines.append(
                 f"LLM usage: {llm_calls} calls, ~{llm_tokens} tokens, avg {avg_latency:.0f}ms"
             )
+
+        links: list[StatsLink] = []
+        if top_chatter_idx is not None and users:
+            top_user_id, _ = users[0]
+            link = self._user_label_link(
+                section="visible",
+                line_index=top_chatter_idx,
+                line=visible_lines[top_chatter_idx],
+                display=displays.get(top_user_id),
+            )
+            if link is not None:
+                links.append(link)
+        if graph_link_rows:
+            links.extend(self._user_links("graph", graph_lines, graph_link_rows, displays))
+
         return StatsReport(
             title=self._title("Chat Stats", lookback),
             visible_lines=visible_lines,
             graph_lines=graph_lines,
             detail_lines=detail_lines,
+            links=links,
         )
 
     async def user_stats(
@@ -265,17 +292,32 @@ class StatsService:
         }
         top_rows = rows[: self._config.top_n_users]
         graph_lines = bar_lines([(labels[user_id], count) for user_id, count in top_rows])
-        links = self._user_links("graph", graph_lines, top_rows, displays)
 
         visible_lines = [f"Active senders: {len(rows)}"]
+        visible_link_rows: list[tuple[int, int]] = []
         if top_rows:
             user_id, count = top_rows[0]
+            visible_link_rows.append((len(visible_lines), user_id))
             visible_lines.append(f"Top chatter: {labels[user_id]} ({count})")
         if len(rows) > 1:
             user_id, count = rows[-1]
+            visible_link_rows.append((len(visible_lines), user_id))
             visible_lines.append(f"Quiet corner: {labels[user_id]} ({count})")
 
         detail_lines = self._ranked_lines([(labels[user_id], count) for user_id, count in rows])
+
+        links: list[StatsLink] = []
+        for line_index, user_id in visible_link_rows:
+            link = self._user_label_link(
+                section="visible",
+                line_index=line_index,
+                line=visible_lines[line_index],
+                display=displays.get(user_id),
+            )
+            if link is not None:
+                links.append(link)
+        links.extend(self._user_links("graph", graph_lines, top_rows, displays))
+        links.extend(self._user_links("detail", detail_lines, rows, displays))
         return StatsReport(
             title=self._title("User Stats", lookback),
             visible_lines=visible_lines,
@@ -396,7 +438,15 @@ class StatsService:
         threads = await count_threads(session, chat_id, since)
         starters = await thread_starters(session, chat_id, since)
         titles = await get_thread_titles(session, chat_id)
-        labels = await self._labels(session, [user_id for user_id, _count in starters])
+        starter_ids = [user_id for user_id, _count in starters]
+        displays = await self._user_displays(session, starter_ids)
+        labels = {
+            user_id: displays.get(
+                user_id,
+                UserDisplay(user_id=user_id, username=None, display_name=f"user {user_id}"),
+            ).display_name
+            for user_id in starter_ids
+        }
 
         if not threads:
             return StatsReport(
@@ -413,21 +463,32 @@ class StatsService:
         visible_lines = [f"Active threads: {len(threads)}"]
         graph_lines = ["Top threads:", *bar_lines(top_threads)]
         detail_lines = ["Top threads:", *self._ranked_lines(top_threads)]
+        links: list[StatsLink] = []
+        starter_rows: list[tuple[int, int]] = []
         if starters:
+            starter_rows = list(starters[: self._config.top_n_users])
+            starter_header_index = len(detail_lines)
             detail_lines.append("Thread starters:")
-            detail_lines.extend(
-                self._ranked_lines(
-                    [
-                        (labels[user_id], count)
-                        for user_id, count in starters[: self._config.top_n_users]
-                    ]
-                )
+            ranked = self._ranked_lines(
+                [(labels[user_id], count) for user_id, count in starter_rows]
             )
+            detail_lines.extend(ranked)
+            for offset, (user_id, _count) in enumerate(starter_rows):
+                line_index = starter_header_index + 1 + offset
+                link = self._user_label_link(
+                    section="detail",
+                    line_index=line_index,
+                    line=detail_lines[line_index],
+                    display=displays.get(user_id),
+                )
+                if link is not None:
+                    links.append(link)
         return StatsReport(
             title=self._title("Thread Stats", lookback),
             visible_lines=visible_lines,
             graph_lines=graph_lines,
             detail_lines=detail_lines,
+            links=links,
         )
 
     async def reaction_stats(
@@ -512,7 +573,15 @@ class StatsService:
     ) -> StatsReport:
         since = self._since(lookback)
         users = await count_messages_by_user(session, chat_id, since)
-        labels = await self._labels(session, [user_id for user_id, _count in users[:1]])
+        top_user_ids = [user_id for user_id, _count in users[:1]]
+        displays = await self._user_displays(session, top_user_ids)
+        labels = {
+            user_id: displays.get(
+                user_id,
+                UserDisplay(user_id=user_id, username=None, display_name=f"user {user_id}"),
+            ).display_name
+            for user_id in top_user_ids
+        }
         texts = await fetch_messages_for_word_stats(session, chat_id, since)
         words = self._word_counter(texts)
         emojis = self._emoji_counter(texts)
@@ -528,9 +597,19 @@ class StatsService:
             )
 
         visible_lines: list[str] = []
+        links: list[StatsLink] = []
         if users:
             user_id, count = users[0]
+            line_index = len(visible_lines)
             visible_lines.append(f"Chatty McChatface: {labels[user_id]} with {count} messages")
+            link = self._user_label_link(
+                section="visible",
+                line_index=line_index,
+                line=visible_lines[line_index],
+                display=displays.get(user_id),
+            )
+            if link is not None:
+                links.append(link)
         if words:
             word, count = words.most_common(1)[0]
             visible_lines.append(f"Buzzword badge: {word} appeared {count} times")
@@ -548,6 +627,7 @@ class StatsService:
             visible_lines=visible_lines,
             graph_lines=[],
             detail_lines=[],
+            links=links,
         )
 
     def _since(self, lookback: timedelta) -> datetime:
@@ -558,12 +638,6 @@ class StatsService:
         window = f"{hours // 24}d" if hours % 24 == 0 else f"{hours}h"
         return f"{title} · last {window}"
 
-    async def _labels(self, session: AsyncSession, user_ids: list[int]) -> dict[int, str]:
-        labels = await fetch_user_display_names(session, user_ids)
-        for user_id in user_ids:
-            labels.setdefault(user_id, f"user {user_id}")
-        return labels
-
     async def _user_displays(
         self,
         session: AsyncSession | None,
@@ -571,17 +645,7 @@ class StatsService:
     ) -> dict[int, UserDisplay]:
         if not user_ids:
             return {}
-        if session is None:
-            labels = await fetch_user_display_names(session, user_ids)  # type: ignore[arg-type]
-            return {
-                user_id: UserDisplay(
-                    user_id=user_id,
-                    username=label[1:] if label.startswith("@") else None,
-                    display_name=label,
-                )
-                for user_id, label in labels.items()
-            }
-        displays = await fetch_user_displays(session, user_ids)
+        displays = await fetch_user_displays(session, user_ids)  # type: ignore[arg-type]
         for user_id in user_ids:
             displays.setdefault(
                 user_id,
@@ -595,28 +659,48 @@ class StatsService:
         lines: list[str],
         rows: list[tuple[int, int]],
         displays: dict[int, UserDisplay],
+        *,
+        line_offset: int = 0,
     ) -> list[StatsLink]:
         links: list[StatsLink] = []
-        for line_index, (user_id, _count) in enumerate(rows):
+        for index, (user_id, _count) in enumerate(rows):
+            line_index = line_offset + index
+            if line_index >= len(lines):
+                break
             display = displays.get(user_id)
-            if display is None:
-                continue
-            url = user_link(display.username)
-            if url is None:
-                continue
-            start = lines[line_index].find(display.display_name)
-            if start < 0:
-                continue
-            links.append(
-                StatsLink(
-                    section=section,
-                    line_index=line_index,
-                    start=start,
-                    length=len(display.display_name),
-                    url=url,
-                )
+            link = self._user_label_link(
+                section=section,
+                line_index=line_index,
+                line=lines[line_index],
+                display=display,
             )
+            if link is not None:
+                links.append(link)
         return links
+
+    @staticmethod
+    def _user_label_link(
+        *,
+        section: StatsSection,
+        line_index: int,
+        line: str,
+        display: UserDisplay | None,
+    ) -> StatsLink | None:
+        if display is None:
+            return None
+        url = user_link(display.username)
+        if url is None:
+            return None
+        start = line.find(display.display_name)
+        if start < 0:
+            return None
+        return StatsLink(
+            section=section,
+            line_index=line_index,
+            start=start,
+            length=len(display.display_name),
+            url=url,
+        )
 
     @staticmethod
     def _preview(value: str | None, *, max_chars: int = 48) -> str | None:

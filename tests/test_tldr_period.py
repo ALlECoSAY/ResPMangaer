@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.services.thread_activity import detect_activity_periods
-from app.services.tldr_service import make_tldr_request, parse_tldr_lookback
+from app.services.tldr_service import _format_activity, make_tldr_request, parse_tldr_lookback
 
 
 def _msg(thread_id: int, when: datetime, body: str = "x") -> SimpleNamespace:
@@ -68,3 +68,15 @@ def test_make_tldr_request_all_scope():
     req = make_tldr_request(scope="all", lookback_hours=12)
     assert req.scope == "all" and req.lookback_hours == 12
     assert "all threads" in req.scope_description.lower()
+
+
+def test_format_activity_strips_at_username():
+    base = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    msg = _msg(1, base, "hello")
+    msg.sender_display_name = "@alice"
+    activities = detect_activity_periods(
+        [msg], activity_gap_minutes=180, max_messages_per_thread=10
+    )
+    rendered = _format_activity(activities, max_threads=5)
+    assert "@alice" not in rendered
+    assert "alice" in rendered

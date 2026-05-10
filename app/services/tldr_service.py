@@ -16,6 +16,7 @@ from app.llm.prompts import TLDR_SYSTEM_PROMPT, build_tldr_user_prompt
 from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
 from app.services.thread_activity import ThreadActivity, detect_activity_periods
+from app.utils.telegram import safe_sender_label
 from app.utils.time import parse_lookback
 
 log = get_logger(__name__)
@@ -66,7 +67,7 @@ def _format_activity(activities: list[ThreadActivity], max_threads: int) -> str:
         lines = [header]
         for msg in activity.messages:
             ts = msg.telegram_date.strftime("%Y-%m-%d %H:%M")
-            sender = msg.sender_display_name or "anon"
+            sender = safe_sender_label(msg.sender_display_name)
             body = (msg.clean_text or msg.text or msg.caption or "").replace("\n", " ").strip()
             if not body:
                 continue
