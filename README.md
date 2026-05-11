@@ -42,6 +42,9 @@ docker compose up -d --build
 docker compose logs -f bot
 ```
 
+The app container runs `alembic upgrade head` before startup, so new database
+tables are applied automatically when the service is recreated.
+
 The service refuses to start with an empty allowlist unless
 `ALLOW_UNSAFE_ALL_CHATS=true`.
 

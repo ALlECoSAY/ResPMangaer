@@ -17,4 +17,4 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY app ./app
 COPY alembic.ini ./
 
-CMD ["python", "-m", "app.main"]
+CMD ["sh", "-c", "alembic upgrade head && python -m app.main"]

@@ -10,7 +10,7 @@ services:
     volumes:
       - ./config:/app/config
     restart: unless-stopped
-    command: ["python", "-m", "app.main"]
+    command: ["sh", "-c", "alembic upgrade head && python -m app.main"]
     networks:
       - bot_net
 
