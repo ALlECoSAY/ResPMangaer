@@ -52,11 +52,13 @@ class OpenRouterClient:
         user_prompt: str,
         temperature: float = 0.2,
         timeout: float = 60.0,  # noqa: ASYNC109 (forwarded to OpenAI SDK)
+        model: str | None = None,
     ) -> LlmResponse:
         started = time.monotonic()
+        request_model = model or self._model
         try:
             response = await self._client.chat.completions.create(
-                model=self._model,
+                model=request_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -88,7 +90,7 @@ class OpenRouterClient:
         usage = response.usage
         return LlmResponse(
             text=text,
-            model=response.model or self._model,
+            model=response.model or request_model,
             prompt_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
             completion_tokens=getattr(usage, "completion_tokens", None) if usage else None,
             latency_ms=latency_ms,

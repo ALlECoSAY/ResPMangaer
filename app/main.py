@@ -11,6 +11,10 @@ from app.bot.command_handlers import (
     handle_ai_command,
     handle_confirm_whitelist_command,
     handle_help_command,
+    handle_memory_command,
+    handle_memory_forget_command,
+    handle_memory_refresh_command,
+    handle_memory_user_command,
     handle_stats_command,
     handle_tldr_command,
     handle_whitelist_command,
@@ -20,6 +24,7 @@ from app.config import Settings, get_settings
 from app.db.session import dispose_engine, init_engine, session_scope
 from app.llm.activity_config import RuntimeActivityConfig
 from app.llm.context_builder import ContextBuilder
+from app.llm.memory_config import RuntimeMemoryConfig
 from app.llm.openrouter_client import OpenRouterClient
 from app.llm.reactions_config import RuntimeReactionsConfig
 from app.llm.runtime_config import RuntimeContextConfig
@@ -28,6 +33,8 @@ from app.services.activity_poller import ActivityPoller
 from app.services.activity_service import ActivityService
 from app.services.ai_answer_service import AiAnswerService
 from app.services.auto_delete_config import RuntimeAutoDeleteConfig
+from app.services.memory_poller import MemoryPoller
+from app.services.memory_service import MemoryService
 from app.services.reaction_poller import ReactionPoller
 from app.services.reaction_service import ReactionService
 from app.services.stats_config import RuntimeStatsConfig
@@ -46,7 +53,10 @@ class AppServices:
     activity_poller: ActivityPoller
     reaction_service: ReactionService
     reaction_poller: ReactionPoller
+    memory_service: MemoryService
+    memory_poller: MemoryPoller
     runtime_context_config: RuntimeContextConfig
+    runtime_memory_config: RuntimeMemoryConfig
     runtime_stats_config: RuntimeStatsConfig
     runtime_auto_delete_config: RuntimeAutoDeleteConfig
 
@@ -65,7 +75,8 @@ def build_services(settings: Settings) -> AppServices:
         site_name=settings.openrouter_site_name,
     )
     runtime_context_config = RuntimeContextConfig(path=settings.context_limits_yaml_path)
-    context_builder = ContextBuilder(runtime_context_config)
+    runtime_memory_config = RuntimeMemoryConfig(path=settings.memory_yaml_path)
+    context_builder = ContextBuilder(runtime_context_config, runtime_memory_config)
     ai_service = AiAnswerService(settings, context_builder, openrouter)
     tldr_service = TldrService(settings, openrouter, runtime_context_config)
     runtime_stats_config = RuntimeStatsConfig(path=settings.stats_yaml_path)
@@ -97,6 +108,16 @@ def build_services(settings: Settings) -> AppServices:
         config=reactions_config,
         reaction_service=reaction_service,
     )
+    memory_service = MemoryService(
+        settings=settings,
+        config=runtime_memory_config,
+        client=openrouter,
+    )
+    memory_poller = MemoryPoller(
+        settings=settings,
+        config=runtime_memory_config,
+        memory_service=memory_service,
+    )
     return AppServices(
         yaml_store=yaml_store,
         access_control=access_control,
@@ -107,7 +128,10 @@ def build_services(settings: Settings) -> AppServices:
         activity_poller=activity_poller,
         reaction_service=reaction_service,
         reaction_poller=reaction_poller,
+        memory_service=memory_service,
+        memory_poller=memory_poller,
         runtime_context_config=runtime_context_config,
+        runtime_memory_config=runtime_memory_config,
         runtime_stats_config=runtime_stats_config,
         runtime_auto_delete_config=runtime_auto_delete_config,
     )
@@ -180,6 +204,7 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
             ai_service=services.ai_service,
             tldr_service=services.tldr_service,
             stats_service=services.stats_service,
+            memory_service=services.memory_service,
             runtime_config=services.runtime_context_config,
             bot_username_provider=bot_username_provider,
             auto_delete_config=services.runtime_auto_delete_config,
@@ -193,6 +218,14 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
             await handle_tldr_command(ctx, "all")
         elif parsed.command == "stats":
             await handle_stats_command(ctx)
+        elif parsed.command == "memory":
+            await handle_memory_command(ctx)
+        elif parsed.command == "memory_user":
+            await handle_memory_user_command(ctx)
+        elif parsed.command == "memory_forget":
+            await handle_memory_forget_command(ctx)
+        elif parsed.command == "memory_refresh":
+            await handle_memory_refresh_command(ctx)
         elif parsed.command == "help":
             await handle_help_command(ctx)
         elif parsed.command == "whitelist":
@@ -267,9 +300,11 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
     log.info("startup.user_runtime")
     services.activity_poller.start(client)
     services.reaction_poller.start(client)
+    services.memory_poller.start()
     try:
         await client.run_until_disconnected()
     finally:
+        await services.memory_poller.stop()
         await services.activity_poller.stop()
         await services.reaction_poller.stop()
         await client.disconnect()

@@ -1,0 +1,33 @@
+version: 1
+memory:
+  enabled: true
+  user_profiles_enabled: true
+  max_chat_memory_chars: 1800
+  max_thread_memory_chars: 1800
+  max_user_memory_chars: 1200
+  update_min_new_messages: 80
+  update_min_interval_minutes: 360
+  max_profiles_per_prompt: 6
+  summarize_model: "openai/gpt-4.1-mini"
+  max_messages_per_update: 180
+  user_profile_min_evidence_messages: 3
+  update_reaction_min_count: 5
+  trigger_keywords:
+    - decided
+    - todo
+    - deadline
+    - blocked
+    - fix
+    - deploy
+    - bug
+    - important
+    - решили
+    - дедлайн
+    - фикс
+    - деплой
+    - баг
+    - важно
+  user_api:
+    poll_enabled: true
+    poll_interval_seconds: 300
+    poll_max_threads_per_tick: 5

@@ -72,6 +72,71 @@ Required output:
 """
 
 
+MEMORY_SYSTEM_PROMPT = """\
+You maintain compact long-term memory for a Telegram group with forum topics.
+
+Rules:
+- Summarize only the supplied old memory and messages.
+- Preserve useful chat/work context: themes, current projects, decisions,
+  open questions, action items, and lightweight recurring jokes if clearly relevant.
+- Keep memory small. Prefer durable facts over transcript-like detail.
+- Never infer sensitive personal attributes such as health, politics, religion,
+  sexuality, ethnicity, finances, or family status. Include such information only
+  if the speaker explicitly self-disclosed it and it is directly useful for the chat task.
+- Do not create psychological profiles. User profiles must stay practical:
+  role in the chat, explicit preferences, expertise visible in messages, and
+  communication style.
+- Never write @username mentions. Use plain display names only.
+- Return strict JSON only. No Markdown, no code fences, no commentary.
+"""
+
+
+MEMORY_USER_PROMPT_TEMPLATE = """\
+Refresh compact memory for one Telegram chat/thread.
+
+Limits:
+- chat_summary <= {max_chat_chars} characters
+- thread_summary <= {max_thread_chars} characters
+- each user profile summary <= {max_user_chars} characters
+
+Existing chat memory:
+{chat_memory}
+
+Existing thread memory:
+{thread_memory}
+
+New messages:
+{messages}
+
+Return exactly this JSON object shape:
+{{
+  "chat_summary": "updated compact chat summary or empty string",
+  "thread_title": "short title or null",
+  "thread_summary": "updated compact thread summary or empty string",
+  "summary_delta": "one sentence about what changed",
+  "new_stable_facts": [],
+  "new_current_projects": [],
+  "new_decisions": [],
+  "new_open_questions": [],
+  "new_action_items": [],
+  "key_participants": [],
+  "user_profile_updates": [
+    {{
+      "user_id": 123,
+      "display_name": "plain display name",
+      "aliases": [],
+      "profile_summary": "short practical profile",
+      "expertise": [],
+      "stated_preferences": [],
+      "interaction_style": "short style note or empty string",
+      "evidence_message_ids": [1, 2],
+      "confidence": 0.0
+    }}
+  ]
+}}
+"""
+
+
 def build_ai_user_prompt(
     question: str, chat_id: int, message_thread_id: int, context_text: str
 ) -> str:
@@ -87,4 +152,23 @@ def build_tldr_user_prompt(scope_description: str, context_text: str) -> str:
     return TLDR_USER_PROMPT_TEMPLATE.format(
         scope_description=scope_description,
         context_text=context_text or "(no messages)",
+    )
+
+
+def build_memory_user_prompt(
+    *,
+    chat_memory: str,
+    thread_memory: str,
+    messages: str,
+    max_chat_chars: int,
+    max_thread_chars: int,
+    max_user_chars: int,
+) -> str:
+    return MEMORY_USER_PROMPT_TEMPLATE.format(
+        chat_memory=chat_memory or "(none)",
+        thread_memory=thread_memory or "(none)",
+        messages=messages or "(no messages)",
+        max_chat_chars=max_chat_chars,
+        max_thread_chars=max_thread_chars,
+        max_user_chars=max_user_chars,
     )

@@ -3,12 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, case, delete, false, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     LlmInteraction,
+    MemoryChatProfile,
+    MemoryThreadProfile,
+    MemoryUserProfile,
     TelegramActivityReplyState,
     TelegramChat,
     TelegramMessage,
@@ -51,6 +54,59 @@ class ReactedMessageStat:
     message_thread_id: int
     count: int
     preview: str | None
+
+
+@dataclass(frozen=True)
+class ChatMemoryProfile:
+    chat_id: int
+    summary: str | None
+    stable_facts: list | dict | None
+    current_projects: list | dict | None
+    decisions: list | dict | None
+    open_questions: list | dict | None
+    source_until_message_id: int | None
+    source_until_date: datetime | None
+    updated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ThreadMemoryProfile:
+    chat_id: int
+    message_thread_id: int
+    title: str | None
+    summary: str | None
+    decisions: list | dict | None
+    action_items: list | dict | None
+    open_questions: list | dict | None
+    key_participants: list | dict | None
+    source_until_message_id: int | None
+    source_until_date: datetime | None
+    updated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class UserMemoryProfile:
+    chat_id: int
+    user_id: int
+    display_name: str | None
+    aliases: list | dict | None
+    profile_summary: str | None
+    expertise: list | dict | None
+    stated_preferences: list | dict | None
+    interaction_style: str | None
+    evidence_message_ids: list | dict | None
+    confidence: float | None
+    source_until_message_id: int | None
+    updated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class MemoryRefreshCandidate:
+    chat_id: int
+    message_thread_id: int
+    new_message_count: int
+    latest_message_id: int | None
+    latest_message_date: datetime | None
 
 
 @dataclass(frozen=True)
@@ -606,6 +662,433 @@ async def get_thread_titles(
     )
     result = await session.execute(stmt)
     return {int(row[0]): row[1] for row in result.all()}
+
+
+def _chat_memory_from_row(row: MemoryChatProfile) -> ChatMemoryProfile:
+    return ChatMemoryProfile(
+        chat_id=int(row.chat_id),
+        summary=row.summary,
+        stable_facts=row.stable_facts,
+        current_projects=row.current_projects,
+        decisions=row.decisions,
+        open_questions=row.open_questions,
+        source_until_message_id=(
+            int(row.source_until_message_id)
+            if row.source_until_message_id is not None
+            else None
+        ),
+        source_until_date=row.source_until_date,
+        updated_at=row.updated_at,
+    )
+
+
+def _thread_memory_from_row(row: MemoryThreadProfile) -> ThreadMemoryProfile:
+    return ThreadMemoryProfile(
+        chat_id=int(row.chat_id),
+        message_thread_id=int(row.message_thread_id),
+        title=row.title,
+        summary=row.summary,
+        decisions=row.decisions,
+        action_items=row.action_items,
+        open_questions=row.open_questions,
+        key_participants=row.key_participants,
+        source_until_message_id=(
+            int(row.source_until_message_id)
+            if row.source_until_message_id is not None
+            else None
+        ),
+        source_until_date=row.source_until_date,
+        updated_at=row.updated_at,
+    )
+
+
+def _user_memory_from_row(row: MemoryUserProfile) -> UserMemoryProfile:
+    return UserMemoryProfile(
+        chat_id=int(row.chat_id),
+        user_id=int(row.user_id),
+        display_name=row.display_name,
+        aliases=row.aliases,
+        profile_summary=row.profile_summary,
+        expertise=row.expertise,
+        stated_preferences=row.stated_preferences,
+        interaction_style=row.interaction_style,
+        evidence_message_ids=row.evidence_message_ids,
+        confidence=float(row.confidence) if row.confidence is not None else None,
+        source_until_message_id=(
+            int(row.source_until_message_id)
+            if row.source_until_message_id is not None
+            else None
+        ),
+        updated_at=row.updated_at,
+    )
+
+
+async def get_chat_memory(
+    session: AsyncSession,
+    chat_id: int,
+) -> ChatMemoryProfile | None:
+    result = await session.execute(
+        select(MemoryChatProfile).where(MemoryChatProfile.chat_id == chat_id)
+    )
+    row = result.scalar_one_or_none()
+    return _chat_memory_from_row(row) if row is not None else None
+
+
+async def upsert_chat_memory(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    summary: str | None,
+    stable_facts: list | dict,
+    current_projects: list | dict,
+    decisions: list | dict,
+    open_questions: list | dict,
+    source_until_message_id: int | None,
+    source_until_date: datetime | None,
+) -> None:
+    values = {
+        "chat_id": chat_id,
+        "summary": summary,
+        "stable_facts": stable_facts,
+        "current_projects": current_projects,
+        "decisions": decisions,
+        "open_questions": open_questions,
+        "source_until_message_id": source_until_message_id,
+        "source_until_date": source_until_date,
+    }
+    stmt = pg_insert(MemoryChatProfile).values(**values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[MemoryChatProfile.chat_id],
+        set_={
+            **values,
+            "updated_at": func.now(),
+        },
+    )
+    await session.execute(stmt)
+
+
+async def get_thread_memory(
+    session: AsyncSession,
+    chat_id: int,
+    message_thread_id: int,
+) -> ThreadMemoryProfile | None:
+    result = await session.execute(
+        select(MemoryThreadProfile).where(
+            MemoryThreadProfile.chat_id == chat_id,
+            MemoryThreadProfile.message_thread_id == message_thread_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    return _thread_memory_from_row(row) if row is not None else None
+
+
+async def upsert_thread_memory(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    message_thread_id: int,
+    title: str | None,
+    summary: str | None,
+    decisions: list | dict,
+    action_items: list | dict,
+    open_questions: list | dict,
+    key_participants: list | dict,
+    source_until_message_id: int | None,
+    source_until_date: datetime | None,
+) -> None:
+    values = {
+        "chat_id": chat_id,
+        "message_thread_id": message_thread_id,
+        "title": title,
+        "summary": summary,
+        "decisions": decisions,
+        "action_items": action_items,
+        "open_questions": open_questions,
+        "key_participants": key_participants,
+        "source_until_message_id": source_until_message_id,
+        "source_until_date": source_until_date,
+    }
+    stmt = pg_insert(MemoryThreadProfile).values(**values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[
+            MemoryThreadProfile.chat_id,
+            MemoryThreadProfile.message_thread_id,
+        ],
+        set_={
+            **values,
+            "updated_at": func.now(),
+        },
+    )
+    await session.execute(stmt)
+
+
+async def get_user_memory(
+    session: AsyncSession,
+    chat_id: int,
+    user_id: int,
+) -> UserMemoryProfile | None:
+    result = await session.execute(
+        select(MemoryUserProfile).where(
+            MemoryUserProfile.chat_id == chat_id,
+            MemoryUserProfile.user_id == user_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    return _user_memory_from_row(row) if row is not None else None
+
+
+async def fetch_user_memories_for_prompt(
+    session: AsyncSession,
+    chat_id: int,
+    user_ids: list[int],
+    limit: int,
+) -> list[UserMemoryProfile]:
+    if not user_ids or limit <= 0:
+        return []
+    stmt = (
+        select(MemoryUserProfile)
+        .where(
+            MemoryUserProfile.chat_id == chat_id,
+            MemoryUserProfile.user_id.in_(user_ids),
+        )
+        .order_by(
+            MemoryUserProfile.confidence.desc().nullslast(),
+            MemoryUserProfile.updated_at.desc(),
+        )
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return [_user_memory_from_row(row) for row in result.scalars().all()]
+
+
+async def upsert_user_memory(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    user_id: int,
+    display_name: str | None,
+    aliases: list | dict,
+    profile_summary: str | None,
+    expertise: list | dict,
+    stated_preferences: list | dict,
+    interaction_style: str | None,
+    evidence_message_ids: list | dict,
+    confidence: float,
+    source_until_message_id: int | None,
+) -> None:
+    values = {
+        "chat_id": chat_id,
+        "user_id": user_id,
+        "display_name": display_name,
+        "aliases": aliases,
+        "profile_summary": profile_summary,
+        "expertise": expertise,
+        "stated_preferences": stated_preferences,
+        "interaction_style": interaction_style,
+        "evidence_message_ids": evidence_message_ids,
+        "confidence": confidence,
+        "source_until_message_id": source_until_message_id,
+    }
+    stmt = pg_insert(MemoryUserProfile).values(**values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[MemoryUserProfile.chat_id, MemoryUserProfile.user_id],
+        set_={
+            **values,
+            "updated_at": func.now(),
+        },
+    )
+    await session.execute(stmt)
+
+
+async def delete_chat_memory(session: AsyncSession, chat_id: int) -> int:
+    result = await session.execute(
+        delete(MemoryChatProfile).where(MemoryChatProfile.chat_id == chat_id)
+    )
+    return int(result.rowcount or 0)
+
+
+async def delete_thread_memory(
+    session: AsyncSession,
+    chat_id: int,
+    message_thread_id: int,
+) -> int:
+    result = await session.execute(
+        delete(MemoryThreadProfile).where(
+            MemoryThreadProfile.chat_id == chat_id,
+            MemoryThreadProfile.message_thread_id == message_thread_id,
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+async def delete_user_memory(
+    session: AsyncSession,
+    chat_id: int,
+    user_id: int,
+) -> int:
+    result = await session.execute(
+        delete(MemoryUserProfile).where(
+            MemoryUserProfile.chat_id == chat_id,
+            MemoryUserProfile.user_id == user_id,
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+async def delete_all_memory_for_chat(session: AsyncSession, chat_id: int) -> int:
+    total = 0
+    for model in (MemoryUserProfile, MemoryThreadProfile, MemoryChatProfile):
+        result = await session.execute(delete(model).where(model.chat_id == chat_id))
+        total += int(result.rowcount or 0)
+    return total
+
+
+async def fetch_messages_for_memory_update(
+    session: AsyncSession,
+    chat_id: int,
+    message_thread_id: int,
+    *,
+    after_message_id: int | None,
+    limit: int,
+    latest: bool = False,
+) -> list[TelegramMessage]:
+    stmt = select(TelegramMessage).where(
+        TelegramMessage.chat_id == chat_id,
+        TelegramMessage.message_thread_id == message_thread_id,
+        TelegramMessage.is_bot_message.is_(False),
+        TelegramMessage.is_command.is_(False),
+    )
+    if after_message_id is not None:
+        stmt = stmt.where(TelegramMessage.message_id > after_message_id)
+    if latest:
+        stmt = stmt.order_by(
+            TelegramMessage.telegram_date.desc(),
+            TelegramMessage.message_id.desc(),
+        ).limit(limit)
+        result = await session.execute(stmt)
+        return list(reversed(result.scalars().all()))
+    stmt = stmt.order_by(
+        TelegramMessage.telegram_date.asc(),
+        TelegramMessage.message_id.asc(),
+    ).limit(limit)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def fetch_memory_refresh_candidates(
+    session: AsyncSession,
+    *,
+    chat_ids: list[int] | None,
+    min_new_messages: int,
+    stale_before: datetime,
+    trigger_keywords: tuple[str, ...],
+    reaction_min_count: int,
+    limit: int,
+) -> list[MemoryRefreshCandidate]:
+    memory_subq = (
+        select(
+            MemoryThreadProfile.chat_id,
+            MemoryThreadProfile.message_thread_id,
+            MemoryThreadProfile.source_until_message_id,
+            MemoryThreadProfile.updated_at,
+        )
+        .subquery()
+    )
+    reaction_counts = (
+        select(
+            TelegramMessageReaction.chat_id,
+            TelegramMessageReaction.message_id,
+            func.count(func.distinct(TelegramMessageReaction.user_id)).label(
+                "reaction_users"
+            ),
+        )
+        .group_by(TelegramMessageReaction.chat_id, TelegramMessageReaction.message_id)
+        .subquery()
+    )
+    body = func.lower(
+        func.coalesce(
+            TelegramMessage.clean_text,
+            TelegramMessage.text,
+            TelegramMessage.caption,
+            "",
+        )
+    )
+    keyword_conditions = [
+        body.like(f"%{keyword.lower()}%")
+        for keyword in trigger_keywords
+        if keyword.strip()
+    ]
+    keyword_match = or_(*keyword_conditions) if keyword_conditions else false()
+    keyword_hits = func.sum(case((keyword_match, 1), else_=0))
+    max_reactions = func.coalesce(func.max(reaction_counts.c.reaction_users), 0)
+    new_count = func.count(TelegramMessage.id)
+    trigger_conditions = [
+        new_count >= min_new_messages,
+        (
+            (memory_subq.c.updated_at.is_not(None))
+            & (memory_subq.c.updated_at < stale_before)
+            & (new_count > 0)
+        ),
+        keyword_hits > 0,
+    ]
+    if reaction_min_count > 0:
+        trigger_conditions.append(max_reactions >= reaction_min_count)
+
+    stmt = (
+        select(
+            TelegramMessage.chat_id,
+            TelegramMessage.message_thread_id,
+            new_count.label("new_message_count"),
+            func.max(TelegramMessage.message_id).label("latest_message_id"),
+            func.max(TelegramMessage.telegram_date).label("latest_message_date"),
+        )
+        .outerjoin(
+            memory_subq,
+            and_(
+                memory_subq.c.chat_id == TelegramMessage.chat_id,
+                memory_subq.c.message_thread_id == TelegramMessage.message_thread_id,
+            ),
+        )
+        .outerjoin(
+            reaction_counts,
+            and_(
+                reaction_counts.c.chat_id == TelegramMessage.chat_id,
+                reaction_counts.c.message_id == TelegramMessage.message_id,
+            ),
+        )
+        .where(
+            TelegramMessage.is_bot_message.is_(False),
+            TelegramMessage.is_command.is_(False),
+            (
+                memory_subq.c.source_until_message_id.is_(None)
+                | (
+                    TelegramMessage.message_id
+                    > memory_subq.c.source_until_message_id
+                )
+            ),
+        )
+        .group_by(
+            TelegramMessage.chat_id,
+            TelegramMessage.message_thread_id,
+            memory_subq.c.updated_at,
+        )
+        .having(or_(*trigger_conditions))
+        .order_by(new_count.desc(), func.max(TelegramMessage.telegram_date).desc())
+        .limit(limit)
+    )
+    if chat_ids:
+        stmt = stmt.where(TelegramMessage.chat_id.in_(chat_ids))
+    result = await session.execute(stmt)
+    return [
+        MemoryRefreshCandidate(
+            chat_id=int(row[0]),
+            message_thread_id=int(row[1]),
+            new_message_count=int(row[2]),
+            latest_message_id=int(row[3]) if row[3] is not None else None,
+            latest_message_date=row[4],
+        )
+        for row in result.all()
+    ]
 
 
 async def replace_user_reactions(

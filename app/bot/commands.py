@@ -3,7 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 KNOWN_COMMANDS = frozenset(
-    {"ai", "tldr", "tldr_all", "stats", "help", "whitelist", "confirm_whitelist"}
+    {
+        "ai",
+        "tldr",
+        "tldr_all",
+        "stats",
+        "help",
+        "memory",
+        "memory_user",
+        "memory_forget",
+        "memory_refresh",
+        "whitelist",
+        "confirm_whitelist",
+    }
 )
 
 

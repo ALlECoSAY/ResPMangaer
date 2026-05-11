@@ -24,12 +24,14 @@ if TYPE_CHECKING:
     from app.llm.runtime_config import RuntimeContextConfig
     from app.services.ai_answer_service import AiAnswerService
     from app.services.auto_delete_config import RuntimeAutoDeleteConfig
+    from app.services.memory_service import MemoryService
     from app.services.stats_service import StatsService
     from app.services.tldr_service import TldrScope, TldrService
     from app.telegram_client.client import TelegramClientProtocol
     from app.telegram_client.types import TgMessage
 
 log = get_logger(__name__)
+_AUTO_DELETE_TASKS: set[asyncio.Task] = set()
 
 HELP_TEXT = """Available commands:
 /help - show this command list
@@ -37,6 +39,10 @@ HELP_TEXT = """Available commands:
 /tldr [12h|2d] - summarize the current thread
 /tldr_all [12h|2d] - summarize recent activity across the chat
 /stats [users|words|times|threads|reactions|fun] [days|12h|2d] - show chat statistics (image + collapsed details)
+/memory - show compact memory for the current thread
+/memory_user - reply to a user's message to show stored user memory
+/memory_forget <thread|chat|all|user|fact> - admin only; forget stored memory
+/memory_refresh - admin only; rebuild compact memory for this thread
 /whitelist - admin only; reply to a user to start whitelisting
 /confirm_whitelist <user_id> - admin only; confirm a whitelist change
 
@@ -56,6 +62,7 @@ class CommandContext:
     runtime_config: RuntimeContextConfig
     bot_username_provider: Callable[[], str | None]
     auto_delete_config: RuntimeAutoDeleteConfig | None = None
+    memory_service: MemoryService | None = None
 
 
 async def _reply(
@@ -109,7 +116,9 @@ def _schedule_auto_delete(
             )
 
     try:
-        asyncio.create_task(_delete_later())
+        task = asyncio.create_task(_delete_later())
+        _AUTO_DELETE_TASKS.add(task)
+        task.add_done_callback(_AUTO_DELETE_TASKS.discard)
     except RuntimeError as exc:
         log.warning("auto_delete.no_running_loop", error=str(exc))
 
@@ -336,6 +345,210 @@ async def handle_stats_command(ctx: CommandContext) -> None:
     except SQLAlchemyError as exc:
         log.error("stats.db_error", error=str(exc))
         await _reply(ctx, "I could not compute stats right now.")
+
+
+def _target_user_id_from_memory_args(ctx: CommandContext, args: str) -> int | None:
+    if ctx.message.reply_to_from_user is not None:
+        return ctx.message.reply_to_from_user.id
+    token = args.split(maxsplit=1)[0] if args else ""
+    try:
+        return int(token)
+    except (TypeError, ValueError):
+        return None
+
+
+async def handle_memory_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_use_ai_commands(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if ctx.memory_service is None or not ctx.memory_service.enabled:
+        await _reply(ctx, "Memory is disabled right now.")
+        return
+
+    try:
+        async with session_scope() as session:
+            text = await ctx.memory_service.describe_thread_memory(
+                session,
+                chat_id=ctx.message.chat.id,
+                message_thread_id=message_thread_id_for(ctx.message),
+            )
+        await _reply(ctx, text, reply_to_message_id=ctx.message.message_id)
+    except SQLAlchemyError as exc:
+        log.error("memory.db_error", error=str(exc))
+        await _reply(ctx, "I could not read memory right now.")
+
+
+async def handle_memory_user_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_use_ai_commands(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if ctx.memory_service is None or not ctx.memory_service.enabled:
+        await _reply(ctx, "Memory is disabled right now.")
+        return
+
+    parsed = _parsed_command(ctx)
+    target_user_id = _target_user_id_from_memory_args(ctx, parsed.args if parsed else "")
+    if target_user_id is None:
+        await _reply(
+            ctx,
+            "Usage: reply to a user's message with /memory_user, or send /memory_user <user_id>",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+
+    try:
+        async with session_scope() as session:
+            text = await ctx.memory_service.describe_user_memory(
+                session,
+                chat_id=ctx.message.chat.id,
+                user_id=target_user_id,
+            )
+        await _reply(ctx, text, reply_to_message_id=ctx.message.message_id)
+    except SQLAlchemyError as exc:
+        log.error("memory_user.db_error", error=str(exc))
+        await _reply(ctx, "I could not read user memory right now.")
+
+
+async def handle_memory_forget_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_manage_whitelist(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if ctx.memory_service is None:
+        await _reply(ctx, "Memory service is not configured.")
+        return
+
+    parsed = _parsed_command(ctx)
+    args = parsed.args if parsed else ""
+    parts = args.split(maxsplit=1)
+    mode = parts[0].lower() if parts else ""
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    usage = (
+        "Usage: /memory_forget thread | chat | all | user [user_id] | fact <text>. "
+        "For user, you can also reply to the user's message."
+    )
+    if not mode:
+        await _reply(ctx, usage, reply_to_message_id=ctx.message.message_id)
+        return
+
+    try:
+        async with session_scope() as session:
+            if mode == "thread":
+                count = await ctx.memory_service.forget_thread(
+                    session,
+                    chat_id=ctx.message.chat.id,
+                    message_thread_id=message_thread_id_for(ctx.message),
+                )
+            elif mode == "chat":
+                count = await ctx.memory_service.forget_chat(
+                    session,
+                    chat_id=ctx.message.chat.id,
+                )
+            elif mode == "all":
+                count = await ctx.memory_service.forget_all(
+                    session,
+                    chat_id=ctx.message.chat.id,
+                )
+            elif mode == "user":
+                target_user_id = _target_user_id_from_memory_args(ctx, rest)
+                if target_user_id is None:
+                    await _reply(ctx, usage, reply_to_message_id=ctx.message.message_id)
+                    return
+                count = await ctx.memory_service.forget_user(
+                    session,
+                    chat_id=ctx.message.chat.id,
+                    user_id=target_user_id,
+                )
+            elif mode == "fact":
+                if not rest:
+                    await _reply(ctx, usage, reply_to_message_id=ctx.message.message_id)
+                    return
+                count = await ctx.memory_service.forget_fact(
+                    session,
+                    chat_id=ctx.message.chat.id,
+                    message_thread_id=message_thread_id_for(ctx.message),
+                    fact_text=rest,
+                )
+            else:
+                await _reply(ctx, usage, reply_to_message_id=ctx.message.message_id)
+                return
+        await _reply(
+            ctx,
+            f"Forgot {count} memory record(s).",
+            reply_to_message_id=ctx.message.message_id,
+        )
+    except SQLAlchemyError as exc:
+        log.error("memory_forget.db_error", error=str(exc))
+        await _reply(ctx, "I could not forget memory right now.")
+
+
+async def handle_memory_refresh_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_manage_whitelist(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if ctx.memory_service is None or not ctx.memory_service.enabled:
+        await _reply(ctx, "Memory is disabled right now.")
+        return
+
+    try:
+        await ctx.client.send_typing(
+            ctx.message.chat.id,
+            message_thread_id=ctx.message.message_thread_id or None,
+        )
+    except Exception as exc:
+        log.warning("memory_refresh.chat_action_failed", error=str(exc))
+
+    try:
+        async with session_scope() as session:
+            result = await ctx.memory_service.refresh_thread(
+                session,
+                chat_id=ctx.message.chat.id,
+                message_thread_id=message_thread_id_for(ctx.message),
+                request_message_id=ctx.message.message_id,
+                force=True,
+            )
+        if result.updated:
+            text = (
+                "Memory refreshed "
+                f"from {result.new_message_count} message(s)"
+                + (
+                    f" up to message {result.latest_message_id}."
+                    if result.latest_message_id is not None
+                    else "."
+                )
+            )
+        else:
+            text = f"Memory was not refreshed: {result.skipped_reason or 'skipped'}."
+        await _reply(ctx, text, reply_to_message_id=ctx.message.message_id)
+    except SQLAlchemyError as exc:
+        log.error("memory_refresh.db_error", error=str(exc))
+        await _reply(ctx, "I could not refresh memory right now.")
+    except Exception as exc:
+        log.error("memory_refresh.failed", error=str(exc))
+        await _reply(ctx, "I could not refresh memory right now.")
 
 
 async def _send_stats_as_image(

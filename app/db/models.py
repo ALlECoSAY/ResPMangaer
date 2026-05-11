@@ -6,6 +6,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -235,6 +237,89 @@ class TelegramReactionState(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class MemoryChatProfile(Base):
+    __tablename__ = "memory_chat_profiles"
+
+    chat_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_chats.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    summary: Mapped[str | None] = mapped_column(Text)
+    stable_facts: Mapped[list | dict | None] = mapped_column(JSONB)
+    current_projects: Mapped[list | dict | None] = mapped_column(JSONB)
+    decisions: Mapped[list | dict | None] = mapped_column(JSONB)
+    open_questions: Mapped[list | dict | None] = mapped_column(JSONB)
+    source_until_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    source_until_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class MemoryThreadProfile(Base):
+    __tablename__ = "memory_thread_profiles"
+
+    chat_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_chats.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    message_thread_id: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default="0",
+        primary_key=True,
+    )
+    title: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
+    decisions: Mapped[list | dict | None] = mapped_column(JSONB)
+    action_items: Mapped[list | dict | None] = mapped_column(JSONB)
+    open_questions: Mapped[list | dict | None] = mapped_column(JSONB)
+    key_participants: Mapped[list | dict | None] = mapped_column(JSONB)
+    source_until_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    source_until_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class MemoryUserProfile(Base):
+    __tablename__ = "memory_user_profiles"
+
+    chat_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_chats.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    display_name: Mapped[str | None] = mapped_column(Text)
+    aliases: Mapped[list | dict | None] = mapped_column(JSONB)
+    profile_summary: Mapped[str | None] = mapped_column(Text)
+    expertise: Mapped[list | dict | None] = mapped_column(JSONB)
+    stated_preferences: Mapped[list | dict | None] = mapped_column(JSONB)
+    interaction_style: Mapped[str | None] = mapped_column(Text)
+    evidence_message_ids: Mapped[list | dict | None] = mapped_column(JSONB)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    source_until_message_id: Mapped[int | None] = mapped_column(BigInteger)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

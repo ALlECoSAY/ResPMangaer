@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     context_limits_yaml_path: Path = Path("/app/config/context_limits.yaml")
     reactions_yaml_path: Path = Path("/app/config/reactions.yaml")
     activity_yaml_path: Path = Path("/app/config/activity.yaml")
+    memory_yaml_path: Path = Path("/app/config/memory.yaml")
     stats_yaml_path: Path = Path("/app/config/stats.yaml")
     auto_delete_yaml_path: Path = Path("/app/config/auto_delete.yaml")
 
