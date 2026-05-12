@@ -69,6 +69,7 @@ def test_should_not_refresh_before_message_or_time_threshold() -> None:
         settings=Settings(_env_file=None),
         config=_FakeMemoryConfig(),  # type: ignore[arg-type]
         client=object(),  # type: ignore[arg-type]
+        prompt_config=object(),  # type: ignore[arg-type]
     )
     fresh = datetime.now(UTC) - timedelta(minutes=5)
 
@@ -80,6 +81,7 @@ def test_should_refresh_on_message_count_keyword_or_stale_memory() -> None:
         settings=Settings(_env_file=None),
         config=_FakeMemoryConfig(),  # type: ignore[arg-type]
         client=object(),  # type: ignore[arg-type]
+        prompt_config=object(),  # type: ignore[arg-type]
     )
     fresh = datetime.now(UTC) - timedelta(minutes=5)
     stale = datetime.now(UTC) - timedelta(hours=2)

@@ -30,7 +30,7 @@ from app.db.repositories import (
     upsert_user_memory,
 )
 from app.llm.memory_config import RuntimeMemoryConfig
-from app.llm.prompts import MEMORY_SYSTEM_PROMPT, build_memory_user_prompt
+from app.llm.prompt_config import RuntimePromptConfig
 from app.logging_config import get_logger
 from app.utils.telegram import safe_sender_label
 
@@ -342,10 +342,12 @@ class MemoryService:
         settings: Settings,
         config: RuntimeMemoryConfig,
         client: OpenRouterClient,
+        prompt_config: RuntimePromptConfig,
     ) -> None:
         self._settings = settings
         self._config = config
         self._client = client
+        self._prompt_config = prompt_config
 
     @property
     def enabled(self) -> bool:
@@ -458,14 +460,16 @@ class MemoryService:
                 skipped_reason="below_threshold",
             )
 
-        prompt = build_memory_user_prompt(
-            chat_memory=_format_chat_memory_for_prompt(chat_memory),
-            thread_memory=_format_thread_memory_for_prompt(thread_memory),
-            messages=_format_messages_for_prompt(messages),
+        prompt = self._prompt_config.render_user(
+            "memory",
+            chat_memory=_format_chat_memory_for_prompt(chat_memory) or "(none)",
+            thread_memory=_format_thread_memory_for_prompt(thread_memory) or "(none)",
+            messages=_format_messages_for_prompt(messages) or "(no messages)",
             max_chat_chars=self._config.max_chat_memory_chars,
             max_thread_chars=self._config.max_thread_memory_chars,
             max_user_chars=self._config.max_user_memory_chars,
         )
+        memory_system_prompt = self._prompt_config.render_system("memory")
         if self._settings.log_prompts:
             log.info(
                 "memory.prompt",
@@ -479,7 +483,7 @@ class MemoryService:
         error: str | None = None
         try:
             response = await self._client.complete(
-                MEMORY_SYSTEM_PROMPT,
+                memory_system_prompt,
                 prompt,
                 temperature=0.1,
                 timeout=90.0,

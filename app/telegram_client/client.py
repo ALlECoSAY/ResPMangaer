@@ -65,3 +65,19 @@ class TelegramClientProtocol(Protocol):
         limit_per_emoji: int = 200,
     ) -> TgMessageReactionSnapshot | None:
         ...
+
+    async def update_profile_name(
+        self,
+        *,
+        first_name: str,
+        last_name: str | None = None,
+    ) -> None:
+        ...
+
+    async def update_profile_photo(
+        self,
+        image_bytes: bytes,
+        *,
+        file_name: str = "avatar.png",
+    ) -> None:
+        ...

@@ -8,6 +8,9 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    BotIdentityProfile as BotIdentityProfileRow,
+)
+from app.db.models import (
     LlmInteraction,
     MemoryChatProfile,
     MemoryThreadProfile,
@@ -1525,6 +1528,92 @@ async def fetch_messages_around(
         after_rows = list(result.scalars().all())
 
     return before_rows, after_rows
+
+
+@dataclass(frozen=True)
+class BotIdentityProfile:
+    chat_id: int
+    display_name: str | None
+    avatar_file_id: str | None
+    avatar_prompt: str | None
+    avatar_updated_at: datetime | None
+    personality_prompt: str | None
+    personality_version: int
+    personality_updated_at: datetime | None
+    last_self_update_at: datetime | None
+    self_update_reason: str | None
+    pending_proposal: list | dict | None
+    metadata_json: list | dict | None
+    updated_at: datetime | None
+
+
+def _bot_identity_from_row(row: BotIdentityProfileRow) -> BotIdentityProfile:
+    return BotIdentityProfile(
+        chat_id=int(row.chat_id),
+        display_name=row.display_name,
+        avatar_file_id=row.avatar_file_id,
+        avatar_prompt=row.avatar_prompt,
+        avatar_updated_at=row.avatar_updated_at,
+        personality_prompt=row.personality_prompt,
+        personality_version=int(row.personality_version or 1),
+        personality_updated_at=row.personality_updated_at,
+        last_self_update_at=row.last_self_update_at,
+        self_update_reason=row.self_update_reason,
+        pending_proposal=row.pending_proposal,
+        metadata_json=row.metadata_json,
+        updated_at=row.updated_at,
+    )
+
+
+async def get_bot_identity(
+    session: AsyncSession,
+    chat_id: int,
+) -> BotIdentityProfile | None:
+    result = await session.execute(
+        select(BotIdentityProfileRow).where(
+            BotIdentityProfileRow.chat_id == chat_id
+        )
+    )
+    row = result.scalar_one_or_none()
+    return _bot_identity_from_row(row) if row is not None else None
+
+
+async def upsert_bot_identity(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    display_name: str | None,
+    avatar_file_id: str | None,
+    avatar_prompt: str | None,
+    avatar_updated_at: datetime | None,
+    personality_prompt: str | None,
+    personality_version: int,
+    personality_updated_at: datetime | None,
+    last_self_update_at: datetime | None,
+    self_update_reason: str | None,
+    pending_proposal: list | dict | None,
+    metadata_json: list | dict | None,
+) -> None:
+    values = {
+        "chat_id": chat_id,
+        "display_name": display_name,
+        "avatar_file_id": avatar_file_id,
+        "avatar_prompt": avatar_prompt,
+        "avatar_updated_at": avatar_updated_at,
+        "personality_prompt": personality_prompt,
+        "personality_version": personality_version,
+        "personality_updated_at": personality_updated_at,
+        "last_self_update_at": last_self_update_at,
+        "self_update_reason": self_update_reason,
+        "pending_proposal": pending_proposal,
+        "metadata_json": metadata_json,
+    }
+    stmt = pg_insert(BotIdentityProfileRow).values(**values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[BotIdentityProfileRow.chat_id],
+        set_={**values, "updated_at": func.now()},
+    )
+    await session.execute(stmt)
 
 
 async def record_llm_interaction(

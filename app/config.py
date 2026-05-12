@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     memory_yaml_path: Path = Path("/app/config/memory.yaml")
     stats_yaml_path: Path = Path("/app/config/stats.yaml")
     auto_delete_yaml_path: Path = Path("/app/config/auto_delete.yaml")
+    prompts_yaml_path: Path = Path("/app/config/prompts.yaml")
+    identity_yaml_path: Path = Path("/app/config/identity.yaml")
 
     # OpenRouter
     openrouter_api_key: str = Field(default="")
@@ -42,6 +44,11 @@ class Settings(BaseSettings):
     openrouter_model: str = "openai/gpt-4.1-mini"
     openrouter_site_url: str = ""
     openrouter_site_name: str = "Telegram AI Thread Bot"
+
+    # Image generation (used for bot avatar). Separate from OpenRouter on purpose.
+    image_generation_api_key: str = Field(default="")
+    image_generation_base_url: str = "https://api.openai.com/v1"
+    image_generation_model: str = "gpt-image-1"
 
     # Database
     postgres_db: str = "telegram_ai_bot"

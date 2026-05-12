@@ -19,6 +19,7 @@ from app.db.repositories import (
     upsert_activity_reply_state,
 )
 from app.llm.activity_config import RuntimeActivityConfig
+from app.llm.prompt_config import RuntimePromptConfig
 from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
 from app.telegram_client.client import TelegramClientProtocol
@@ -40,47 +41,6 @@ class _LlmClient(Protocol):
         self, system_prompt: str, user_prompt: str
     ) -> _LlmResponse:
         ...
-
-
-ACTIVITY_SYSTEM_PROMPT = """\
-You are a regular participant in a Telegram group chat. The chat has been
-lively recently, and you are chiming in naturally.
-
-Your job:
-- Reply to the marked message with a single short conversational comment.
-- Match the tone and language of the surrounding chat.
-- Keep it under 2 short sentences. No bullet lists, no headers, no markdown.
-- Do not announce that you are a bot and do not explain why you are replying.
-- Stay relevant to the messages shown. Be specific, not generic.
-- Do not start with "Reply:" or any prefix.
-- Never write @username mentions. Refer to people by their plain display name
-  (no leading "@") so the bot never triggers Telegram notifications.
-"""
-
-
-ACTIVITY_USER_PROMPT_TEMPLATE = """\
-Recent chat context (chronological).
-The line marked with >>> is the message you should reply to.
-
-{context_text}
-
-Write a single short, in-character reply to the >>> message. Output only the
-reply text, nothing else."""
-
-
-FOLLOW_UP_SYSTEM_PROMPT = """\
-You are continuing a Telegram group chat conversation after someone addressed
-your previous message.
-
-Your job:
-- Answer the latest marked user message naturally and briefly.
-- Keep it under 2 short sentences. No bullet lists, no headers, no markdown.
-- Do not announce that you are a bot.
-- Stay grounded in the recent chat context.
-- Do not start with "Reply:" or any prefix.
-- Never write @username mentions. Refer to people by their plain display name
-  (no leading "@") so the bot never triggers Telegram notifications.
-"""
 
 
 def _message_body(row: TelegramMessage) -> str:
@@ -109,12 +69,14 @@ class ActivityService:
         config: RuntimeActivityConfig,
         runtime_config: RuntimeContextConfig,
         client: _LlmClient,
+        prompt_config: RuntimePromptConfig,
         rng: random.Random | None = None,
     ) -> None:
         self._settings = settings
         self._config = config
         self._runtime_config = runtime_config
         self._client = client
+        self._prompt_config = prompt_config
         self._rng = rng or random.Random()
         self._recent_replies: dict[tuple[int, int], float] = {}
 
@@ -210,7 +172,7 @@ class ActivityService:
             rows=rows,
             target=target,
             command_name="activity_reply",
-            system_prompt=ACTIVITY_SYSTEM_PROMPT,
+            system_prompt=self._prompt_config.render_system("activity"),
         )
 
     async def handle_incoming_message(
@@ -284,7 +246,7 @@ class ActivityService:
             rows=rows,
             target=target,
             command_name=command_name,
-            system_prompt=FOLLOW_UP_SYSTEM_PROMPT,
+            system_prompt=self._prompt_config.render_follow_up_system("activity"),
         )
         return True
 
@@ -311,7 +273,10 @@ class ActivityService:
         system_prompt: str,
     ) -> None:
         context_text = self._build_context_text(rows, target)
-        user_prompt = ACTIVITY_USER_PROMPT_TEMPLATE.format(context_text=context_text)
+        user_prompt = self._prompt_config.render_user(
+            "activity",
+            context_text=context_text,
+        )
 
         if self._settings.log_prompts:
             log.info("activity.prompt", prompt=user_prompt)

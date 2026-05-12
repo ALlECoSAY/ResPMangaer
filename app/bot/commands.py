@@ -15,6 +15,14 @@ KNOWN_COMMANDS = frozenset(
         "memory_refresh",
         "whitelist",
         "confirm_whitelist",
+        "bot_identity",
+        "bot_personality",
+        "bot_personality_set",
+        "bot_personality_refresh",
+        "bot_personality_approve",
+        "bot_personality_discard",
+        "bot_name_set",
+        "bot_avatar_refresh",
     }
 )
 

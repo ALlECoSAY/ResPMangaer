@@ -9,6 +9,14 @@ from app.auth.yaml_store import YamlAccessStore
 from app.bot.command_handlers import (
     CommandContext,
     handle_ai_command,
+    handle_bot_avatar_refresh_command,
+    handle_bot_identity_command,
+    handle_bot_name_set_command,
+    handle_bot_personality_approve_command,
+    handle_bot_personality_command,
+    handle_bot_personality_discard_command,
+    handle_bot_personality_refresh_command,
+    handle_bot_personality_set_command,
     handle_confirm_whitelist_command,
     handle_help_command,
     handle_memory_command,
@@ -26,6 +34,7 @@ from app.llm.activity_config import RuntimeActivityConfig
 from app.llm.context_builder import ContextBuilder
 from app.llm.memory_config import RuntimeMemoryConfig
 from app.llm.openrouter_client import OpenRouterClient
+from app.llm.prompt_config import RuntimePromptConfig
 from app.llm.reactions_config import RuntimeReactionsConfig
 from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import configure_logging, get_logger
@@ -33,6 +42,10 @@ from app.services.activity_poller import ActivityPoller
 from app.services.activity_service import ActivityService
 from app.services.ai_answer_service import AiAnswerService
 from app.services.auto_delete_config import RuntimeAutoDeleteConfig
+from app.services.avatar_service import AvatarService
+from app.services.bot_identity_service import BotIdentityService
+from app.services.identity_config import RuntimeIdentityConfig
+from app.services.image_generation_client import ImageGenerationClient
 from app.services.memory_poller import MemoryPoller
 from app.services.memory_service import (
     MemoryService,
@@ -63,6 +76,10 @@ class AppServices:
     runtime_memory_config: RuntimeMemoryConfig
     runtime_stats_config: RuntimeStatsConfig
     runtime_auto_delete_config: RuntimeAutoDeleteConfig
+    runtime_prompt_config: RuntimePromptConfig
+    runtime_identity_config: RuntimeIdentityConfig
+    bot_identity_service: BotIdentityService
+    avatar_service: AvatarService
 
 
 def build_services(settings: Settings) -> AppServices:
@@ -80,9 +97,32 @@ def build_services(settings: Settings) -> AppServices:
     )
     runtime_context_config = RuntimeContextConfig(path=settings.context_limits_yaml_path)
     runtime_memory_config = RuntimeMemoryConfig(path=settings.memory_yaml_path)
+    runtime_prompt_config = RuntimePromptConfig(path=settings.prompts_yaml_path)
+    runtime_identity_config = RuntimeIdentityConfig(
+        path=settings.identity_yaml_path
+    )
+    bot_identity_service = BotIdentityService(
+        prompt_config=runtime_prompt_config,
+        identity_config=runtime_identity_config,
+        client=openrouter,
+    )
+    image_generation_client = ImageGenerationClient(
+        api_key=settings.image_generation_api_key,
+        base_url=settings.image_generation_base_url,
+        model=settings.image_generation_model,
+    )
+    avatar_service = AvatarService(
+        identity_config=runtime_identity_config,
+        identity_service=bot_identity_service,
+        image_client=image_generation_client,
+    )
     context_builder = ContextBuilder(runtime_context_config, runtime_memory_config)
-    ai_service = AiAnswerService(settings, context_builder, openrouter)
-    tldr_service = TldrService(settings, openrouter, runtime_context_config)
+    ai_service = AiAnswerService(
+        settings, context_builder, openrouter, runtime_prompt_config
+    )
+    tldr_service = TldrService(
+        settings, openrouter, runtime_context_config, runtime_prompt_config
+    )
     runtime_stats_config = RuntimeStatsConfig(path=settings.stats_yaml_path)
     stats_service = StatsService(runtime_stats_config)
     runtime_auto_delete_config = RuntimeAutoDeleteConfig(
@@ -94,6 +134,7 @@ def build_services(settings: Settings) -> AppServices:
         config=activity_config,
         runtime_config=runtime_context_config,
         client=openrouter,
+        prompt_config=runtime_prompt_config,
     )
     activity_poller = ActivityPoller(
         settings=settings,
@@ -106,6 +147,7 @@ def build_services(settings: Settings) -> AppServices:
         config=reactions_config,
         runtime_config=runtime_context_config,
         client=openrouter,
+        prompt_config=runtime_prompt_config,
     )
     reaction_poller = ReactionPoller(
         settings=settings,
@@ -116,6 +158,7 @@ def build_services(settings: Settings) -> AppServices:
         settings=settings,
         config=runtime_memory_config,
         client=openrouter,
+        prompt_config=runtime_prompt_config,
     )
     memory_poller = MemoryPoller(
         settings=settings,
@@ -138,6 +181,10 @@ def build_services(settings: Settings) -> AppServices:
         runtime_memory_config=runtime_memory_config,
         runtime_stats_config=runtime_stats_config,
         runtime_auto_delete_config=runtime_auto_delete_config,
+        runtime_prompt_config=runtime_prompt_config,
+        runtime_identity_config=runtime_identity_config,
+        bot_identity_service=bot_identity_service,
+        avatar_service=avatar_service,
     )
 
 
@@ -255,6 +302,9 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
             runtime_config=services.runtime_context_config,
             bot_username_provider=bot_username_provider,
             auto_delete_config=services.runtime_auto_delete_config,
+            bot_identity_service=services.bot_identity_service,
+            identity_config=services.runtime_identity_config,
+            avatar_service=services.avatar_service,
         )
 
         if parsed.command == "ai":
@@ -279,6 +329,22 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
             await handle_whitelist_command(ctx)
         elif parsed.command == "confirm_whitelist":
             await handle_confirm_whitelist_command(ctx)
+        elif parsed.command == "bot_identity":
+            await handle_bot_identity_command(ctx)
+        elif parsed.command == "bot_personality":
+            await handle_bot_personality_command(ctx)
+        elif parsed.command == "bot_personality_set":
+            await handle_bot_personality_set_command(ctx)
+        elif parsed.command == "bot_personality_refresh":
+            await handle_bot_personality_refresh_command(ctx)
+        elif parsed.command == "bot_personality_approve":
+            await handle_bot_personality_approve_command(ctx)
+        elif parsed.command == "bot_personality_discard":
+            await handle_bot_personality_discard_command(ctx)
+        elif parsed.command == "bot_name_set":
+            await handle_bot_name_set_command(ctx)
+        elif parsed.command == "bot_avatar_refresh":
+            await handle_bot_avatar_refresh_command(ctx)
 
     @client.raw_client.on(events.Raw)
     async def handle_raw_update(update) -> None:

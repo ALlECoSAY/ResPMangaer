@@ -1,0 +1,27 @@
+version: 1
+
+identity:
+  enabled: true
+
+  personality:
+    self_update_enabled: true
+    min_days_between_updates: 5
+    min_new_messages_between_updates: 500
+    require_admin_approval: true
+    max_prompt_chars: 1800
+    model: "openai/gpt-4.1-mini"
+    min_confidence: 0.75
+
+  display_name:
+    self_update_enabled: true
+    require_admin_approval: true
+    min_days_between_updates: 5
+    max_length: 32
+
+  avatar:
+    enabled: false
+    self_update_enabled: false
+    require_admin_approval: true
+    min_days_between_updates: 90
+    image_model: "gpt-image-1"
+    max_generations_per_month: 1

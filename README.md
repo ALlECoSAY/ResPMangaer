@@ -19,6 +19,8 @@ cp config/reactions.yaml.example config/reactions.yaml
 cp config/activity.yaml.example config/activity.yaml
 cp config/stats.yaml.example config/stats.yaml
 cp config/auto_delete.yaml.example config/auto_delete.yaml
+cp config/prompts.yaml.example config/prompts.yaml
+cp config/identity.yaml.example config/identity.yaml
 ```
 
 Bot behavior such as reply size, context budget, `/ai` message caps, and `/tldr`

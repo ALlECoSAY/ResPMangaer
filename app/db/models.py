@@ -328,6 +328,41 @@ class MemoryUserProfile(Base):
     )
 
 
+class BotIdentityProfile(Base):
+    __tablename__ = "bot_identity_profiles"
+
+    chat_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_chats.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    display_name: Mapped[str | None] = mapped_column(Text)
+    avatar_file_id: Mapped[str | None] = mapped_column(Text)
+    avatar_prompt: Mapped[str | None] = mapped_column(Text)
+    avatar_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    personality_prompt: Mapped[str | None] = mapped_column(Text)
+    personality_version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+    personality_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_self_update_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    self_update_reason: Mapped[str | None] = mapped_column(Text)
+    pending_proposal: Mapped[list | dict | None] = mapped_column(JSONB)
+    metadata_json: Mapped[list | dict | None] = mapped_column(JSONB)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class LlmInteraction(Base):
     __tablename__ = "llm_interactions"
 

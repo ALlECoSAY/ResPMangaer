@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -11,6 +12,7 @@ import pytest
 
 from app.config import Settings
 from app.llm.openrouter_client import LlmResponse
+from app.llm.prompt_config import RuntimePromptConfig
 from app.services import reaction_service as reaction_service_module
 from app.services.reaction_service import ReactionService
 from app.telegram_client.types import (
@@ -237,11 +239,13 @@ def _make_service(
     rng = random.Random()
     rng.random = lambda: rng_value  # type: ignore[method-assign]
     client = _FakeOpenRouter()
+    prompt_config = RuntimePromptConfig(path=Path("/tmp/__nonexistent_prompts.yaml"))
     svc = ReactionService(
         settings=settings,
         config=config,  # type: ignore[arg-type]
         runtime_config=_FakeRuntimeConfig(),  # type: ignore[arg-type]
         client=client,  # type: ignore[arg-type]
+        prompt_config=prompt_config,
         rng=rng,
     )
     return svc, client

@@ -3,9 +3,11 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from app.llm.prompt_config import RuntimePromptConfig
 from app.services import activity_service as activity_service_module
 from app.services.activity_service import ActivityService
 from app.telegram_client.types import TgChat, TgMessage, TgUser
@@ -159,11 +161,13 @@ def _make_service(
     rng = random.Random()
     rng.random = lambda: rng_value  # type: ignore[method-assign]
     llm = _FakeOpenRouter()
+    prompt_config = RuntimePromptConfig(path=Path("/tmp/__nonexistent_prompts.yaml"))
     svc = ActivityService(
         settings=_FakeSettings(),  # type: ignore[arg-type]
         config=config,  # type: ignore[arg-type]
         runtime_config=_FakeRuntimeConfig(),  # type: ignore[arg-type]
         client=llm,  # type: ignore[arg-type]
+        prompt_config=prompt_config,
         rng=rng,
     )
     return svc, llm

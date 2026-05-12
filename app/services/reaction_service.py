@@ -23,6 +23,7 @@ from app.db.repositories import (
     upsert_user,
 )
 from app.llm.openrouter_client import LlmResponse, OpenRouterClient, OpenRouterError
+from app.llm.prompt_config import RuntimePromptConfig
 from app.llm.reactions_config import RuntimeReactionsConfig
 from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
@@ -31,37 +32,6 @@ from app.telegram_client.types import TgMessageReactionSnapshot, TgReactionUpdat
 from app.utils.telegram import safe_sender_label, strip_notification_mentions
 
 log = get_logger(__name__)
-
-
-REACTION_SYSTEM_PROMPT = """\
-You are a Telegram chat participant. A specific message in a group chat has
-collected several user reactions, suggesting the chat finds it noteworthy
-(funny, surprising, controversial, important, etc.).
-
-Your job:
-- Reply to that exact message with a single short, conversational comment.
-- Match the tone and language of the surrounding chat.
-- Keep it under 2 short sentences. No bullet lists, no headers, no markdown.
-- Do not announce that you are a bot, do not explain reactions, do not summarize.
-- Do not start with "Reply:" or any prefix.
-- Stay relevant to the reacted message; treat the surrounding messages as
-  background only.
-- Avoid being preachy or generic. Be specific to what was actually said.
-- Never write @username mentions. Refer to people by their plain display name
-  (no leading "@") so the bot never triggers Telegram notifications.
-"""
-
-
-REACTION_USER_PROMPT_TEMPLATE = """\
-Chat context (chronological).
-The line marked with >>> is the message the chat reacted to.
-
-{context_text}
-
-Reactions on the >>> message: {reactions_summary}
-
-Write a single short, in-character reply to the >>> message. Output only the
-reply text, nothing else."""
 
 
 @dataclass(frozen=True)
@@ -106,12 +76,14 @@ class ReactionService:
         config: RuntimeReactionsConfig,
         runtime_config: RuntimeContextConfig,
         client: OpenRouterClient,
+        prompt_config: RuntimePromptConfig,
         rng: random.Random | None = None,
     ) -> None:
         self._settings = settings
         self._config = config
         self._runtime_config = runtime_config
         self._client = client
+        self._prompt_config = prompt_config
         self._rng = rng or random.Random()
         # In-memory cooldown — cleared on restart, which is fine for
         # avoiding short bursts of duplicate replies.
@@ -243,10 +215,12 @@ class ReactionService:
             self._summarize_emojis(new_emojis, old_emojis)
         )
         context_text = self._build_context_text(before_rows, target, after_rows)
-        user_prompt = REACTION_USER_PROMPT_TEMPLATE.format(
+        user_prompt = self._prompt_config.render_user(
+            "reaction",
             context_text=context_text,
             reactions_summary=reactions_summary,
         )
+        system_prompt = self._prompt_config.render_system("reaction")
 
         if self._settings.log_prompts:
             log.info("reactions.prompt", prompt=user_prompt)
@@ -256,7 +230,7 @@ class ReactionService:
         response: LlmResponse | None = None
         try:
             response = await self._client.complete(
-                REACTION_SYSTEM_PROMPT, user_prompt
+                system_prompt, user_prompt
             )
             success = True
         except OpenRouterError as exc:
@@ -489,10 +463,12 @@ class ReactionService:
 
         reactions_summary = _build_reactions_summary(dict(snapshot.counts))
         context_text = self._build_context_text(before_rows, target, after_rows)
-        user_prompt = REACTION_USER_PROMPT_TEMPLATE.format(
+        user_prompt = self._prompt_config.render_user(
+            "reaction",
             context_text=context_text,
             reactions_summary=reactions_summary,
         )
+        system_prompt = self._prompt_config.render_system("reaction")
 
         if self._settings.log_prompts:
             log.info("reactions.prompt", prompt=user_prompt)
@@ -502,7 +478,7 @@ class ReactionService:
         response: LlmResponse | None = None
         try:
             response = await self._client.complete(
-                REACTION_SYSTEM_PROMPT, user_prompt
+                system_prompt, user_prompt
             )
             success = True
         except OpenRouterError as exc:

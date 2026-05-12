@@ -6,7 +6,7 @@ from app.config import Settings
 from app.db.repositories import record_llm_interaction
 from app.llm.context_builder import ContextBuilder
 from app.llm.openrouter_client import LlmResponse, OpenRouterClient, OpenRouterError
-from app.llm.prompts import AI_SYSTEM_PROMPT, build_ai_user_prompt
+from app.llm.prompt_config import RuntimePromptConfig
 from app.logging_config import get_logger
 
 log = get_logger(__name__)
@@ -18,10 +18,12 @@ class AiAnswerService:
         settings: Settings,
         context_builder: ContextBuilder,
         client: OpenRouterClient,
+        prompt_config: RuntimePromptConfig,
     ) -> None:
         self._settings = settings
         self._context_builder = context_builder
         self._client = client
+        self._prompt_config = prompt_config
 
     async def answer(
         self,
@@ -37,12 +39,14 @@ class AiAnswerService:
             message_thread_id=message_thread_id,
             question=question,
         )
-        user_prompt = build_ai_user_prompt(
+        user_prompt = self._prompt_config.render_user(
+            "ai",
             question=question,
             chat_id=chat_id,
             message_thread_id=message_thread_id,
-            context_text=ctx.context_text,
+            context_text=ctx.context_text or "(no context available)",
         )
+        system_prompt = self._prompt_config.render_system("ai")
         if self._settings.log_prompts:
             log.info("ai.prompt", prompt=user_prompt)
 
@@ -50,7 +54,7 @@ class AiAnswerService:
         error: str | None = None
         response: LlmResponse | None = None
         try:
-            response = await self._client.complete(AI_SYSTEM_PROMPT, user_prompt)
+            response = await self._client.complete(system_prompt, user_prompt)
             success = True
             return response
         except OpenRouterError as exc:

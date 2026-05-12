@@ -12,7 +12,7 @@ from app.db.repositories import (
     record_llm_interaction,
 )
 from app.llm.openrouter_client import LlmResponse, OpenRouterClient, OpenRouterError
-from app.llm.prompts import TLDR_SYSTEM_PROMPT, build_tldr_user_prompt
+from app.llm.prompt_config import RuntimePromptConfig
 from app.llm.runtime_config import RuntimeContextConfig
 from app.logging_config import get_logger
 from app.services.thread_activity import ThreadActivity, detect_activity_periods
@@ -82,10 +82,12 @@ class TldrService:
         settings: Settings,
         client: OpenRouterClient,
         runtime_config: RuntimeContextConfig,
+        prompt_config: RuntimePromptConfig,
     ) -> None:
         self._settings = settings
         self._client = client
         self._runtime_config = runtime_config
+        self._prompt_config = prompt_config
 
     def _limits_for(self, scope: TldrScope) -> tuple[int, int]:
         if scope == "thread":
@@ -142,7 +144,12 @@ class TldrService:
         if not context_text.strip():
             return None, "No meaningful recent activity found."
 
-        user_prompt = build_tldr_user_prompt(request.scope_description, context_text)
+        user_prompt = self._prompt_config.render_user(
+            "tldr",
+            scope_description=request.scope_description,
+            context_text=context_text or "(no messages)",
+        )
+        system_prompt = self._prompt_config.render_system("tldr")
         if self._settings.log_prompts:
             log.info("tldr.prompt", scope=request.scope, prompt=user_prompt)
 
@@ -151,7 +158,7 @@ class TldrService:
         response: LlmResponse | None = None
         command_name = "tldr_all" if request.scope == "all" else "tldr"
         try:
-            response = await self._client.complete(TLDR_SYSTEM_PROMPT, user_prompt)
+            response = await self._client.complete(system_prompt, user_prompt)
             success = True
             return response, None
         except OpenRouterError as exc:

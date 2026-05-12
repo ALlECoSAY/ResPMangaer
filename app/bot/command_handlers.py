@@ -28,6 +28,9 @@ if TYPE_CHECKING:
     from app.llm.runtime_config import RuntimeContextConfig
     from app.services.ai_answer_service import AiAnswerService
     from app.services.auto_delete_config import RuntimeAutoDeleteConfig
+    from app.services.avatar_service import AvatarService
+    from app.services.bot_identity_service import BotIdentityService
+    from app.services.identity_config import RuntimeIdentityConfig
     from app.services.memory_service import MemoryService
     from app.services.stats_service import StatsService
     from app.services.tldr_service import TldrScope, TldrService
@@ -47,6 +50,14 @@ HELP_TEXT = """Available commands:
 /memory_user - reply to a user's message to show stored user memory
 /memory_forget <chat|all|user|fact> - admin only; forget stored memory
 /memory_refresh - admin only; rebuild compact memory for this chat
+/bot_identity - show the bot's stored identity for this chat
+/bot_personality - show the active bot personality prompt
+/bot_personality_set <text> - admin only; set this chat's bot personality
+/bot_personality_refresh - admin only; ask the LLM to propose a personality update (gated)
+/bot_personality_approve - admin only; apply a pending personality proposal
+/bot_personality_discard - admin only; discard a pending personality proposal
+/bot_name_set <name> - admin only; update the bot account display name
+/bot_avatar_refresh [prompt] - admin only; refresh the bot avatar (disabled by default)
 /whitelist - admin only; reply to a user to start whitelisting
 /confirm_whitelist <user_id> - admin only; confirm a whitelist change
 
@@ -67,6 +78,9 @@ class CommandContext:
     bot_username_provider: Callable[[], str | None]
     auto_delete_config: RuntimeAutoDeleteConfig | None = None
     memory_service: MemoryService | None = None
+    bot_identity_service: BotIdentityService | None = None
+    identity_config: RuntimeIdentityConfig | None = None
+    avatar_service: AvatarService | None = None
 
 
 async def _reply(
@@ -727,3 +741,346 @@ async def handle_confirm_whitelist_command(ctx: CommandContext) -> None:
         f"User {target_id} is already in whitelist.",
         reply_to_message_id=ctx.message.message_id,
     )
+
+
+async def handle_bot_identity_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_use_ai_commands(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if ctx.bot_identity_service is None:
+        await _reply(ctx, "Bot identity service is not configured.")
+        return
+    try:
+        async with session_scope() as session:
+            text = await ctx.bot_identity_service.describe_identity(
+                session, ctx.message.chat.id
+            )
+        await _reply(ctx, text, reply_to_message_id=ctx.message.message_id)
+    except SQLAlchemyError as exc:
+        log.error("bot_identity.db_error", error=str(exc))
+        await _reply(ctx, "I could not read bot identity right now.")
+
+
+async def handle_bot_personality_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_use_ai_commands(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if ctx.bot_identity_service is None:
+        await _reply(ctx, "Bot identity service is not configured.")
+        return
+    try:
+        async with session_scope() as session:
+            text = await ctx.bot_identity_service.describe_personality(
+                session, ctx.message.chat.id
+            )
+        await _reply(ctx, text, reply_to_message_id=ctx.message.message_id)
+    except SQLAlchemyError as exc:
+        log.error("bot_personality.db_error", error=str(exc))
+        await _reply(ctx, "I could not read bot personality right now.")
+
+
+async def handle_bot_personality_set_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_manage_whitelist(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if ctx.bot_identity_service is None:
+        await _reply(ctx, "Bot identity service is not configured.")
+        return
+
+    parsed = _parsed_command(ctx)
+    text = parsed.args.strip() if parsed else ""
+    if not text:
+        await _reply(
+            ctx,
+            "Usage: /bot_personality_set <prompt text>",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+
+    try:
+        async with session_scope() as session:
+            outcome = await ctx.bot_identity_service.set_personality(
+                session,
+                chat_id=ctx.message.chat.id,
+                new_prompt=text,
+                reason=f"manual_set by user {user_id}",
+                is_self_update=False,
+            )
+    except SQLAlchemyError as exc:
+        log.error("bot_personality_set.db_error", error=str(exc))
+        await _reply(ctx, "I could not update personality right now.")
+        return
+
+    if outcome.applied:
+        await _reply(
+            ctx,
+            f"Personality updated (v{outcome.new_version}).",
+            reply_to_message_id=ctx.message.message_id,
+        )
+    else:
+        await _reply(
+            ctx,
+            f"Could not update personality: {outcome.reason}",
+            reply_to_message_id=ctx.message.message_id,
+        )
+
+
+async def handle_bot_personality_refresh_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_manage_whitelist(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if ctx.bot_identity_service is None:
+        await _reply(ctx, "Bot identity service is not configured.")
+        return
+
+    try:
+        async with session_scope() as session:
+            outcome = await ctx.bot_identity_service.propose_personality_update(
+                session,
+                chat_id=ctx.message.chat.id,
+                recent_messages_text="(refresh requested by admin; rely on chat memory)",
+            )
+    except SQLAlchemyError as exc:
+        log.error("bot_personality_refresh.db_error", error=str(exc))
+        await _reply(ctx, "I could not refresh personality right now.")
+        return
+
+    if outcome.applied:
+        await _reply(
+            ctx,
+            f"Personality updated (v{outcome.new_version}).",
+            reply_to_message_id=ctx.message.message_id,
+        )
+    elif outcome.awaiting_approval:
+        await _reply(
+            ctx,
+            "Personality proposal stored. Use /bot_personality_approve to apply, "
+            "or /bot_personality_discard to drop it.",
+            reply_to_message_id=ctx.message.message_id,
+        )
+    else:
+        await _reply(
+            ctx,
+            f"Personality refresh skipped: {outcome.reason}",
+            reply_to_message_id=ctx.message.message_id,
+        )
+
+
+async def handle_bot_personality_approve_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_manage_whitelist(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if ctx.bot_identity_service is None:
+        await _reply(ctx, "Bot identity service is not configured.")
+        return
+
+    try:
+        async with session_scope() as session:
+            outcome = await ctx.bot_identity_service.apply_pending_proposal(
+                session, chat_id=ctx.message.chat.id
+            )
+    except SQLAlchemyError as exc:
+        log.error("bot_personality_approve.db_error", error=str(exc))
+        await _reply(ctx, "I could not apply the proposal.")
+        return
+
+    if outcome.applied:
+        await _reply(
+            ctx,
+            f"Pending proposal applied (v{outcome.new_version}).",
+            reply_to_message_id=ctx.message.message_id,
+        )
+    else:
+        await _reply(
+            ctx,
+            f"Could not apply proposal: {outcome.reason}",
+            reply_to_message_id=ctx.message.message_id,
+        )
+
+
+async def handle_bot_personality_discard_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_manage_whitelist(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if ctx.bot_identity_service is None:
+        await _reply(ctx, "Bot identity service is not configured.")
+        return
+
+    try:
+        async with session_scope() as session:
+            discarded = await ctx.bot_identity_service.discard_pending_proposal(
+                session, chat_id=ctx.message.chat.id
+            )
+    except SQLAlchemyError as exc:
+        log.error("bot_personality_discard.db_error", error=str(exc))
+        await _reply(ctx, "I could not discard the proposal.")
+        return
+
+    if discarded:
+        await _reply(
+            ctx,
+            "Pending proposal discarded.",
+            reply_to_message_id=ctx.message.message_id,
+        )
+    else:
+        await _reply(
+            ctx,
+            "No pending proposal to discard.",
+            reply_to_message_id=ctx.message.message_id,
+        )
+
+
+async def handle_bot_name_set_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_manage_whitelist(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if ctx.bot_identity_service is None:
+        await _reply(ctx, "Bot identity service is not configured.")
+        return
+
+    parsed = _parsed_command(ctx)
+    name = parsed.args.strip() if parsed else ""
+    if not name:
+        await _reply(
+            ctx,
+            "Usage: /bot_name_set <new display name>",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+
+    # Update Telegram account profile (global — affects the user account).
+    updater = getattr(ctx.client, "update_profile_name", None)
+    if updater is not None:
+        try:
+            await updater(first_name=name)
+        except Exception as exc:
+            log.error("bot_name_set.telegram_failed", error=str(exc))
+            await _reply(
+                ctx,
+                "Could not update Telegram profile name.",
+                reply_to_message_id=ctx.message.message_id,
+            )
+            return
+
+    try:
+        async with session_scope() as session:
+            outcome = await ctx.bot_identity_service.set_display_name(
+                session,
+                chat_id=ctx.message.chat.id,
+                display_name=name,
+            )
+    except SQLAlchemyError as exc:
+        log.error("bot_name_set.db_error", error=str(exc))
+        await _reply(ctx, "I could not persist the new name.")
+        return
+
+    if outcome.applied:
+        await _reply(
+            ctx,
+            f"Display name updated to: {name}\n"
+            "Note: this changes the account profile globally, not only in this chat.",
+            reply_to_message_id=ctx.message.message_id,
+        )
+    else:
+        await _reply(
+            ctx,
+            f"Could not update name: {outcome.reason}",
+            reply_to_message_id=ctx.message.message_id,
+        )
+
+
+async def handle_bot_avatar_refresh_command(ctx: CommandContext) -> None:
+    user_id = ctx.message.from_user.id if ctx.message.from_user else None
+    decision = await ctx.access_control.can_manage_whitelist(user_id)
+    if not decision.allowed:
+        await _reply(
+            ctx,
+            decision.reason or "denied",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+
+    if ctx.avatar_service is None or ctx.identity_config is None:
+        await _reply(
+            ctx,
+            "Avatar service is not configured.",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+    if not ctx.identity_config.avatar.enabled:
+        await _reply(
+            ctx,
+            "Avatar updates are disabled in config/identity.yaml (avatar.enabled).",
+            reply_to_message_id=ctx.message.message_id,
+        )
+        return
+
+    parsed = _parsed_command(ctx)
+    instruction = parsed.args.strip() if parsed else ""
+    try:
+        async with session_scope() as session:
+            outcome = await ctx.avatar_service.refresh_avatar(
+                session,
+                client=ctx.client,
+                chat_id=ctx.message.chat.id,
+                admin_instruction=instruction or None,
+            )
+    except SQLAlchemyError as exc:
+        log.error("bot_avatar_refresh.db_error", error=str(exc))
+        await _reply(ctx, "I could not refresh the avatar right now.")
+        return
+
+    if outcome.applied:
+        await _reply(
+            ctx,
+            "Avatar refreshed.",
+            reply_to_message_id=ctx.message.message_id,
+        )
+    else:
+        await _reply(
+            ctx,
+            f"Avatar refresh skipped: {outcome.reason}",
+            reply_to_message_id=ctx.message.message_id,
+        )

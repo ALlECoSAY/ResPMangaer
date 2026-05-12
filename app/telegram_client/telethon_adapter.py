@@ -317,6 +317,34 @@ class TelethonUserClient(TelegramClientProtocol):
             )
         )
 
+    async def update_profile_name(
+        self,
+        *,
+        first_name: str,
+        last_name: str | None = None,
+    ) -> None:
+        await self._client(
+            functions.account.UpdateProfileRequest(
+                first_name=first_name,
+                last_name=last_name or "",
+            )
+        )
+        # Invalidate cached self info so the next read refreshes.
+        self._self_username = None
+
+    async def update_profile_photo(
+        self,
+        image_bytes: bytes,
+        *,
+        file_name: str = "avatar.png",
+    ) -> None:
+        buffer = io.BytesIO(image_bytes)
+        buffer.name = file_name
+        uploaded = await self._client.upload_file(buffer)
+        await self._client(
+            functions.photos.UploadProfilePhotoRequest(file=uploaded)
+        )
+
     async def fetch_message_reaction_snapshot(
         self,
         chat_id: int,
