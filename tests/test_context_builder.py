@@ -228,6 +228,6 @@ async def test_memory_block_is_inserted_with_budget(monkeypatch, patched_repo, t
 
     assert "MEMORY:" in ctx.context_text
     assert "Chat memory:" in ctx.context_text
-    assert "Current thread memory: Launch" in ctx.context_text
+    assert "Chat detail memory: Launch" in ctx.context_text
     assert "prefers short replies" in ctx.context_text
     assert len(ctx.context_text) <= 1700

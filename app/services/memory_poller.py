@@ -80,7 +80,7 @@ class MemoryPoller:
         now = datetime.now(UTC)
         stale_before = now - timedelta(minutes=self._config.update_min_interval_minutes)
         allowed = list(self._settings.allowed_chat_ids) or None
-        limit = self._config.poll_max_threads_per_tick
+        limit = self._config.poll_max_chats_per_tick
 
         async with session_scope() as session:
             candidates = await fetch_memory_refresh_candidates(

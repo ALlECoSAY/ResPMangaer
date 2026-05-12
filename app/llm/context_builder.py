@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import TelegramMessage
 from app.db.repositories import (
+    CHAT_SCOPED_MEMORY_THREAD_ID,
     ChatMemoryProfile,
     ThreadMemoryProfile,
     UserMemoryProfile,
@@ -136,7 +137,7 @@ def _format_chat_memory(memory: ChatMemoryProfile, budget: int) -> str:
 
 
 def _format_thread_memory(memory: ThreadMemoryProfile, budget: int) -> str:
-    header = "Current thread memory:"
+    header = "Chat detail memory:"
     if memory.title:
         header += f" {memory.title}"
     lines: list[str] = [header]
@@ -295,7 +296,12 @@ class ContextBuilder:
             return ""
 
         chat_memory = await get_chat_memory(session, chat_id)
-        thread_memory = await get_thread_memory(session, chat_id, message_thread_id)
+        del message_thread_id
+        thread_memory = await get_thread_memory(
+            session,
+            chat_id,
+            CHAT_SCOPED_MEMORY_THREAD_ID,
+        )
         user_ids: list[int] = []
         seen_user_ids: set[int] = set()
         for row in reversed(same_rows):

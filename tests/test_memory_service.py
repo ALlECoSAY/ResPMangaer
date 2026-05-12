@@ -4,9 +4,11 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.config import Settings
-from app.db.repositories import ThreadMemoryProfile
 from app.services.memory_service import (
+    ExplicitMemoryResult,
     MemoryService,
+    extract_explicit_memory_text,
+    format_explicit_memory_result,
     merge_json_list,
     parse_memory_json,
     should_apply_user_update,
@@ -29,22 +31,6 @@ def _message(message_id: int, body: str):
     )
 
 
-def _thread_memory(updated_at: datetime) -> ThreadMemoryProfile:
-    return ThreadMemoryProfile(
-        chat_id=1,
-        message_thread_id=5,
-        title=None,
-        summary=None,
-        decisions=[],
-        action_items=[],
-        open_questions=[],
-        key_participants=[],
-        source_until_message_id=10,
-        source_until_date=None,
-        updated_at=updated_at,
-    )
-
-
 def test_merge_json_list_deduplicates_and_keeps_latest_budget() -> None:
     merged = merge_json_list(
         ["old", {"x": 1}, "duplicate"],
@@ -61,13 +47,30 @@ def test_parse_memory_json_accepts_fenced_json() -> None:
     assert payload == {"thread_summary": "ok"}
 
 
+def test_explicit_memory_text_extracts_body() -> None:
+    assert extract_explicit_memory_text("запомни Phoenix2005 зовут Алиса") == (
+        "Phoenix2005 зовут Алиса"
+    )
+    assert extract_explicit_memory_text("обычный вопрос") is None
+
+
+def test_explicit_memory_confirmation_mentions_sanitized_labels() -> None:
+    result = ExplicitMemoryResult(
+        updated=True,
+        saved_text="Qaw3ri зовут Давид",
+        removed_unsafe_labels=True,
+    )
+
+    assert "Оскорбительные ярлыки" in format_explicit_memory_result(result)
+
+
 def test_should_not_refresh_before_message_or_time_threshold() -> None:
     service = MemoryService(
         settings=Settings(_env_file=None),
         config=_FakeMemoryConfig(),  # type: ignore[arg-type]
         client=object(),  # type: ignore[arg-type]
     )
-    fresh = _thread_memory(datetime.now(UTC) - timedelta(minutes=5))
+    fresh = datetime.now(UTC) - timedelta(minutes=5)
 
     assert service._should_refresh(fresh, [_message(11, "one"), _message(12, "two")]) is False
 
@@ -78,8 +81,8 @@ def test_should_refresh_on_message_count_keyword_or_stale_memory() -> None:
         config=_FakeMemoryConfig(),  # type: ignore[arg-type]
         client=object(),  # type: ignore[arg-type]
     )
-    fresh = _thread_memory(datetime.now(UTC) - timedelta(minutes=5))
-    stale = _thread_memory(datetime.now(UTC) - timedelta(hours=2))
+    fresh = datetime.now(UTC) - timedelta(minutes=5)
+    stale = datetime.now(UTC) - timedelta(hours=2)
 
     assert service._should_refresh(fresh, [_message(1, "a"), _message(2, "b"), _message(3, "c")])
     assert service._should_refresh(fresh, [_message(4, "это важно")])

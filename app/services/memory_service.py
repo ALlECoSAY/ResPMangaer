@@ -11,14 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.db.models import TelegramMessage
 from app.db.repositories import (
+    CHAT_SCOPED_MEMORY_THREAD_ID,
     ChatMemoryProfile,
     ThreadMemoryProfile,
     UserMemoryProfile,
     delete_all_memory_for_chat,
     delete_chat_memory,
-    delete_thread_memory,
+    delete_thread_memories_for_chat,
     delete_user_memory,
     fetch_messages_for_memory_update,
+    find_user_display_in_chat,
     get_chat_memory,
     get_thread_memory,
     get_user_memory,
@@ -38,6 +40,23 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+_EXPLICIT_MEMORY_RE = re.compile(
+    r"^\s*(?:запомни(?:те)?|сохрани(?:те)?|remember)\b[\s:,\-.]*(?P<body>.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+_NAME_FACT_RE = re.compile(
+    r"(?P<label>@?[A-Za-zА-Яа-яЁё0-9_][\wА-Яа-яЁё.\-]{1,48})"  # noqa: RUF001
+    r"\s+(?:зовут|это)\s+"
+    r"(?P<name>[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_.\-]{1,48})",  # noqa: RUF001
+    re.IGNORECASE,
+)
+_EXTRA_ALIAS_RE = re.compile(
+    r"^[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_.\-]{1,48}$"  # noqa: RUF001
+)
+_BLOCKED_MEMORY_TERMS_RE = re.compile(
+    r"\b(?:чурк\w*|пидор\w*|нигг\w*|жид\w*|хохл\w*)\b",
+    re.IGNORECASE,
+)
 
 
 class MemoryUpdateError(Exception):
@@ -50,6 +69,49 @@ class MemoryRefreshResult:
     new_message_count: int = 0
     latest_message_id: int | None = None
     skipped_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ExplicitMemoryResult:
+    updated: bool
+    saved_text: str = ""
+    user_updates: int = 0
+    removed_unsafe_labels: bool = False
+    skipped_reason: str | None = None
+
+
+def extract_explicit_memory_text(text: str | None) -> str | None:
+    if not text:
+        return None
+    match = _EXPLICIT_MEMORY_RE.match(text.strip())
+    if match is None:
+        return None
+    body = match.group("body").strip()
+    return body or None
+
+
+def is_explicit_memory_request(text: str | None) -> bool:
+    return extract_explicit_memory_text(text) is not None
+
+
+def _sanitize_explicit_memory_text(text: str) -> tuple[str, bool]:
+    removed = bool(_BLOCKED_MEMORY_TERMS_RE.search(text))
+    value = _BLOCKED_MEMORY_TERMS_RE.sub("", text)
+    value = re.sub(r"\b(он|она|они)\s+и\s+", r"\1 ", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s+([,.;:])", r"\1", value)
+    value = re.sub(r"([,.;:]){2,}", r"\1", value)
+    value = re.sub(r"\s{2,}", " ", value)
+    return value.strip(" \t\r\n,.;:"), removed
+
+
+def format_explicit_memory_result(result: ExplicitMemoryResult) -> str:
+    if not result.updated:
+        return "Не нашёл, что сохранить в память."  # noqa: RUF001
+    if result.removed_unsafe_labels:
+        return "Запомнил полезную часть. Оскорбительные ярлыки в память не сохраняю."
+    if result.user_updates:
+        return "Запомнил и обновил профиль участника."
+    return "Запомнил."
 
 
 def trim_text(text: Any, max_chars: int) -> str:
@@ -230,6 +292,49 @@ def _format_thread_memory_for_prompt(memory: ThreadMemoryProfile | None) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _latest_memory_source(
+    chat_memory: ChatMemoryProfile | None,
+    thread_memory: ThreadMemoryProfile | None,
+) -> tuple[int | None, datetime | None]:
+    candidates: list[tuple[int | None, datetime | None]] = []
+    if chat_memory is not None:
+        candidates.append((chat_memory.source_until_message_id, chat_memory.updated_at))
+    if thread_memory is not None:
+        candidates.append(
+            (thread_memory.source_until_message_id, thread_memory.updated_at)
+        )
+    message_ids = [message_id for message_id, _ in candidates if message_id is not None]
+    updated_at_values = [updated_at for _, updated_at in candidates if updated_at is not None]
+    return (
+        max(message_ids) if message_ids else None,
+        max(updated_at_values) if updated_at_values else None,
+    )
+
+
+def _source_message_id_for_user_memory(
+    existing: UserMemoryProfile | None,
+    source_message_id: int | None,
+) -> int | None:
+    current = existing.source_until_message_id if existing else None
+    if current is None:
+        return source_message_id
+    if source_message_id is None:
+        return current
+    return max(int(current), int(source_message_id))
+
+
+def _aliases_from_name_match(memory_text: str, match: re.Match[str]) -> list[str]:
+    aliases = [match.group("name").strip()]
+    tail = memory_text[match.end() : match.end() + 80]
+    if not tail.startswith(","):
+        return aliases
+    for raw_alias in tail.split(".", 1)[0].split(",")[1:]:
+        alias = raw_alias.strip()
+        if _EXTRA_ALIAS_RE.fullmatch(alias):
+            aliases.append(alias)
+    return aliases
+
+
 class MemoryService:
     def __init__(
         self,
@@ -246,6 +351,66 @@ class MemoryService:
     def enabled(self) -> bool:
         return self._config.enabled
 
+    async def remember_text(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        text: str,
+        source_message_id: int | None = None,
+    ) -> ExplicitMemoryResult:
+        if not self._config.enabled:
+            return ExplicitMemoryResult(updated=False, skipped_reason="disabled")
+
+        body = extract_explicit_memory_text(text)
+        if body is None:
+            return ExplicitMemoryResult(updated=False, skipped_reason="not_memory_request")
+
+        memory_text, removed_unsafe = _sanitize_explicit_memory_text(body)
+        if not memory_text:
+            return ExplicitMemoryResult(updated=False, skipped_reason="empty_after_sanitize")
+
+        chat_memory = await get_chat_memory(session, chat_id)
+        await upsert_chat_memory(
+            session,
+            chat_id=chat_id,
+            summary=chat_memory.summary if chat_memory else None,
+            stable_facts=merge_json_list(
+                chat_memory.stable_facts if chat_memory else [],
+                [memory_text],
+                max_items=100,
+            ),
+            current_projects=ensure_list(
+                chat_memory.current_projects if chat_memory else []
+            ),
+            decisions=ensure_list(chat_memory.decisions if chat_memory else []),
+            open_questions=ensure_list(
+                chat_memory.open_questions if chat_memory else []
+            ),
+            source_until_message_id=(
+                chat_memory.source_until_message_id if chat_memory else None
+            ),
+            source_until_date=chat_memory.source_until_date if chat_memory else None,
+        )
+        user_updates = await self._apply_explicit_user_memory(
+            session,
+            chat_id=chat_id,
+            memory_text=memory_text,
+            source_message_id=source_message_id,
+        )
+        log.info(
+            "memory.explicit_saved",
+            chat_id=chat_id,
+            user_updates=user_updates,
+            removed_unsafe_labels=removed_unsafe,
+        )
+        return ExplicitMemoryResult(
+            updated=True,
+            saved_text=memory_text,
+            user_updates=user_updates,
+            removed_unsafe_labels=removed_unsafe,
+        )
+
     async def refresh_thread(
         self,
         session: AsyncSession,
@@ -259,14 +424,19 @@ class MemoryService:
         if not self._config.enabled:
             return MemoryRefreshResult(updated=False, skipped_reason="disabled")
 
-        thread_memory = await get_thread_memory(session, chat_id, message_thread_id)
-        after_message_id = None if force else (
-            thread_memory.source_until_message_id if thread_memory else None
+        del message_thread_id
+        memory_thread_id = CHAT_SCOPED_MEMORY_THREAD_ID
+        chat_memory = await get_chat_memory(session, chat_id)
+        thread_memory = await get_thread_memory(session, chat_id, memory_thread_id)
+        source_until_message_id, source_updated_at = _latest_memory_source(
+            chat_memory,
+            thread_memory,
         )
+        after_message_id = None if force else source_until_message_id
         messages = await fetch_messages_for_memory_update(
             session,
             chat_id,
-            message_thread_id,
+            None,
             after_message_id=after_message_id,
             limit=self._config.max_messages_per_update,
             latest=force,
@@ -279,7 +449,7 @@ class MemoryService:
         if (
             not force
             and not skip_threshold
-            and not self._should_refresh(thread_memory, messages)
+            and not self._should_refresh(source_updated_at, messages)
         ):
             return MemoryRefreshResult(
                 updated=False,
@@ -288,7 +458,6 @@ class MemoryService:
                 skipped_reason="below_threshold",
             )
 
-        chat_memory = await get_chat_memory(session, chat_id)
         prompt = build_memory_user_prompt(
             chat_memory=_format_chat_memory_for_prompt(chat_memory),
             thread_memory=_format_thread_memory_for_prompt(thread_memory),
@@ -298,7 +467,12 @@ class MemoryService:
             max_user_chars=self._config.max_user_memory_chars,
         )
         if self._settings.log_prompts:
-            log.info("memory.prompt", chat_id=chat_id, thread_id=message_thread_id, prompt=prompt)
+            log.info(
+                "memory.prompt",
+                chat_id=chat_id,
+                thread_id=memory_thread_id,
+                prompt=prompt,
+            )
 
         response = None
         success = False
@@ -315,7 +489,7 @@ class MemoryService:
             await self._apply_payload(
                 session,
                 chat_id=chat_id,
-                message_thread_id=message_thread_id,
+                message_thread_id=memory_thread_id,
                 chat_memory=chat_memory,
                 thread_memory=thread_memory,
                 messages=messages,
@@ -337,7 +511,7 @@ class MemoryService:
             await record_llm_interaction(
                 session,
                 chat_id=chat_id,
-                message_thread_id=message_thread_id,
+                message_thread_id=memory_thread_id,
                 request_message_id=request_message_id,
                 command_name="memory_refresh",
                 model=response.model if response else self._config.summarize_model,
@@ -352,7 +526,7 @@ class MemoryService:
 
     def _should_refresh(
         self,
-        thread_memory: ThreadMemoryProfile | None,
+        source_updated_at: datetime | None,
         messages: list[TelegramMessage],
     ) -> bool:
         if len(messages) >= self._config.update_min_new_messages:
@@ -360,10 +534,10 @@ class MemoryService:
         joined = "\n".join(_message_body(message).lower() for message in messages)
         if any(keyword.lower() in joined for keyword in self._config.trigger_keywords):
             return True
-        if thread_memory is None or thread_memory.updated_at is None:
+        if source_updated_at is None:
             return False
         stale_after = timedelta(minutes=self._config.update_min_interval_minutes)
-        age = datetime.now(UTC) - thread_memory.updated_at
+        age = datetime.now(UTC) - source_updated_at
         return age >= stale_after
 
     async def _apply_payload(
@@ -489,6 +663,69 @@ class MemoryService:
                 latest_message_id=latest_message_id,
             )
 
+    async def _apply_explicit_user_memory(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        memory_text: str,
+        source_message_id: int | None,
+    ) -> int:
+        if not self._config.user_profiles_enabled:
+            return 0
+
+        updated = 0
+        seen_user_ids: set[int] = set()
+        for match in _NAME_FACT_RE.finditer(memory_text):
+            label = match.group("label").strip()
+            user_display = await find_user_display_in_chat(session, chat_id, label)
+            if user_display is None or user_display.user_id in seen_user_ids:
+                continue
+            seen_user_ids.add(user_display.user_id)
+
+            aliases = _aliases_from_name_match(memory_text, match)
+            existing = await get_user_memory(session, chat_id, user_display.user_id)
+            existing_summary = existing.profile_summary if existing else None
+            profile_summary = existing_summary or f"Known in chat as {aliases[0]}."
+            if existing_summary and aliases[0].lower() not in existing_summary.lower():
+                profile_summary = trim_text(
+                    f"{existing_summary}\nKnown in chat as {aliases[0]}.",
+                    self._config.max_user_memory_chars,
+                )
+
+            await upsert_user_memory(
+                session,
+                chat_id=chat_id,
+                user_id=user_display.user_id,
+                display_name=existing.display_name if existing else user_display.display_name,
+                aliases=merge_json_list(
+                    existing.aliases if existing else [],
+                    aliases,
+                    max_items=30,
+                ),
+                profile_summary=trim_text(
+                    profile_summary,
+                    self._config.max_user_memory_chars,
+                ),
+                expertise=ensure_list(existing.expertise if existing else []),
+                stated_preferences=ensure_list(
+                    existing.stated_preferences if existing else []
+                ),
+                interaction_style=existing.interaction_style if existing else None,
+                evidence_message_ids=merge_json_list(
+                    existing.evidence_message_ids if existing else [],
+                    [source_message_id] if source_message_id is not None else [],
+                    max_items=80,
+                ),
+                confidence=max(existing.confidence if existing and existing.confidence else 0.0, 0.95),
+                source_until_message_id=_source_message_id_for_user_memory(
+                    existing,
+                    source_message_id,
+                ),
+            )
+            updated += 1
+        return updated
+
     async def _upsert_merged_user_profile(
         self,
         session: AsyncSession,
@@ -557,10 +794,23 @@ class MemoryService:
         chat_id: int,
         message_thread_id: int,
     ) -> str:
+        del message_thread_id
+        return await self.describe_chat_memory(session, chat_id=chat_id)
+
+    async def describe_chat_memory(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+    ) -> str:
         chat = await get_chat_memory(session, chat_id)
-        thread = await get_thread_memory(session, chat_id, message_thread_id)
+        thread = await get_thread_memory(
+            session,
+            chat_id,
+            CHAT_SCOPED_MEMORY_THREAD_ID,
+        )
         if chat is None and thread is None:
-            return "No memory stored for this chat/thread yet."
+            return "No memory stored for this chat yet."
 
         lines: list[str] = []
         if chat is not None:
@@ -573,7 +823,7 @@ class MemoryService:
         if thread is not None:
             if lines:
                 lines.append("")
-            header = "Thread memory"
+            header = "Chat detail memory"
             if thread.title:
                 header += f": {thread.title}"
             lines.append(header)
@@ -615,10 +865,13 @@ class MemoryService:
         chat_id: int,
         message_thread_id: int,
     ) -> int:
-        return await delete_thread_memory(session, chat_id, message_thread_id)
+        del message_thread_id
+        return await delete_thread_memories_for_chat(session, chat_id)
 
     async def forget_chat(self, session: AsyncSession, *, chat_id: int) -> int:
-        return await delete_chat_memory(session, chat_id)
+        count = await delete_chat_memory(session, chat_id)
+        count += await delete_thread_memories_for_chat(session, chat_id)
+        return count
 
     async def forget_user(
         self,
@@ -640,8 +893,13 @@ class MemoryService:
         message_thread_id: int,
         fact_text: str,
     ) -> int:
+        del message_thread_id
         chat = await get_chat_memory(session, chat_id)
-        thread = await get_thread_memory(session, chat_id, message_thread_id)
+        thread = await get_thread_memory(
+            session,
+            chat_id,
+            CHAT_SCOPED_MEMORY_THREAD_ID,
+        )
         changed = 0
         if chat is not None:
             new_summary = _remove_fact_from_text(chat.summary, fact_text)
@@ -687,7 +945,7 @@ class MemoryService:
                 await upsert_thread_memory(
                     session,
                     chat_id=chat_id,
-                    message_thread_id=message_thread_id,
+                    message_thread_id=CHAT_SCOPED_MEMORY_THREAD_ID,
                     title=thread.title,
                     summary=new_summary,
                     decisions=new_decisions,

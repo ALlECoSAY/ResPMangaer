@@ -19,6 +19,7 @@ from app.bot.command_handlers import (
 from app.config import Settings
 from app.llm.runtime_config import RuntimeContextConfig
 from app.services.auto_delete_config import RuntimeAutoDeleteConfig
+from app.services.memory_service import ExplicitMemoryResult
 from app.services.stats_config import RuntimeStatsConfig
 from app.services.stats_report import StatsReport
 from app.services.stats_service import StatsService
@@ -166,6 +167,24 @@ class _FakeAiService:
         assert self.answer_calls == 0
 
 
+class _FakeMemoryService:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def remember_text(self, session, *, chat_id, text, source_message_id=None):
+        del session
+        self.calls.append(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "source_message_id": source_message_id,
+            }
+        )
+        return ExplicitMemoryResult(updated=True, saved_text=text, user_updates=1)
+
+
 class _FakeTldrService:
     async def summarize(self, *args, **kwargs):
         return None, "No meaningful recent activity found."
@@ -249,6 +268,33 @@ async def test_ai_denied_before_llm_call(tmp_path: Path) -> None:
     ai_service.assert_not_awaited()
     assert client.sent_messages
     assert "not whitelisted" in client.sent_messages[0]["text"]
+
+
+async def test_ai_remember_request_updates_memory_without_llm(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ctx, client, ai_service, _store = _make_ctx(
+        tmp_path,
+        message=_make_message(text="/ai запомни Phoenix2005 зовут Алиса"),
+        admins_yaml="version: 1\nadmins: []\n",
+        whitelist_yaml="version: 1\nusers:\n  - id: 100\n",
+    )
+    memory_service = _FakeMemoryService()
+    ctx.memory_service = memory_service  # type: ignore[assignment]
+    monkeypatch.setattr(command_handlers_module, "session_scope", lambda: _FakeSessionScope())
+
+    await handle_ai_command(ctx)
+
+    ai_service.assert_not_awaited()
+    assert memory_service.calls == [
+        {
+            "chat_id": 1,
+            "text": "запомни Phoenix2005 зовут Алиса",
+            "source_message_id": 10,
+        }
+    ]
+    assert "Запомнил" in client.sent_messages[0]["text"]
 
 
 async def test_whitelist_command_prompts_for_confirmation(tmp_path: Path) -> None:

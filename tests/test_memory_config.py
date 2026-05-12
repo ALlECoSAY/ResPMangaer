@@ -27,7 +27,7 @@ def test_memory_config_loads_yaml(tmp_path: Path) -> None:
           user_api:
             poll_enabled: true
             poll_interval_seconds: 12
-            poll_max_threads_per_tick: 3
+            poll_max_chats_per_tick: 3
         """,
         encoding="utf-8",
     )
@@ -49,4 +49,5 @@ def test_memory_config_loads_yaml(tmp_path: Path) -> None:
     assert cfg.trigger_keywords == ("decided", "важно")
     assert cfg.poll_enabled is True
     assert cfg.poll_interval_seconds == 12
+    assert cfg.poll_max_chats_per_tick == 3
     assert cfg.poll_max_threads_per_tick == 3

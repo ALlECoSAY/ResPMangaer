@@ -261,6 +261,31 @@ activity without spontaneous replies. `allowed_hours` uses the runtime/server
 hour and only gates spontaneous replies; direct replies to the bot can still be
 handled through their own chance setting.
 
+## Long-Term Memory
+
+The bot keeps compact memory per chat, shared across all forum topics in that
+chat. A background poller checks stored non-command, non-bot messages and
+refreshes memory when a chat has enough new messages, a configured keyword is
+seen, a popular reaction threshold is reached, or existing memory becomes stale.
+
+Edit `config/memory.yaml` (hot-reloads on file change):
+
+```yaml
+memory:
+  enabled: true
+  user_profiles_enabled: true
+  update_min_new_messages: 30
+  update_min_interval_minutes: 360
+  trigger_keywords: [decided, todo, deadline, bug, important, решили, дедлайн, баг, важно]
+  user_api:
+    poll_enabled: true
+    poll_interval_seconds: 300
+    poll_max_chats_per_tick: 5
+```
+
+Use `/memory_refresh` to force a rebuild for the current chat and `/memory` to
+inspect what is stored.
+
 ## Manual Smoke Checklist
 
 - Create a Telethon session successfully.

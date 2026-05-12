@@ -34,7 +34,11 @@ from app.services.activity_service import ActivityService
 from app.services.ai_answer_service import AiAnswerService
 from app.services.auto_delete_config import RuntimeAutoDeleteConfig
 from app.services.memory_poller import MemoryPoller
-from app.services.memory_service import MemoryService
+from app.services.memory_service import (
+    MemoryService,
+    format_explicit_memory_result,
+    is_explicit_memory_request,
+)
 from app.services.reaction_poller import ReactionPoller
 from app.services.reaction_service import ReactionService
 from app.services.stats_config import RuntimeStatsConfig
@@ -186,6 +190,49 @@ async def run_user_api(settings: Settings, services: AppServices) -> int:
 
         parsed = parse_command(tg_message.text, bot_username_provider())
         if parsed is None:
+            raw_text = tg_message.text or tg_message.caption or ""
+            if is_explicit_memory_request(raw_text):
+                user_id = tg_message.from_user.id if tg_message.from_user else None
+                decision = await services.access_control.can_use_ai_commands(user_id)
+                if not decision.allowed:
+                    await client.send_message(
+                        tg_message.chat.id,
+                        decision.reason or "denied",
+                        reply_to_message_id=tg_message.message_id,
+                        message_thread_id=tg_message.message_thread_id or None,
+                    )
+                    return
+                if not services.memory_service.enabled:
+                    await client.send_message(
+                        tg_message.chat.id,
+                        "Memory is disabled right now.",
+                        reply_to_message_id=tg_message.message_id,
+                        message_thread_id=tg_message.message_thread_id or None,
+                    )
+                    return
+                try:
+                    async with session_scope() as session:
+                        result = await services.memory_service.remember_text(
+                            session,
+                            chat_id=tg_message.chat.id,
+                            text=raw_text,
+                            source_message_id=tg_message.message_id,
+                        )
+                    await client.send_message(
+                        tg_message.chat.id,
+                        format_explicit_memory_result(result),
+                        reply_to_message_id=tg_message.message_id,
+                        message_thread_id=tg_message.message_thread_id or None,
+                    )
+                except Exception as exc:
+                    log.error("memory_explicit.failed", error=str(exc))
+                    await client.send_message(
+                        tg_message.chat.id,
+                        "I could not update memory right now.",
+                        reply_to_message_id=tg_message.message_id,
+                        message_thread_id=tg_message.message_thread_id or None,
+                    )
+                return
             try:
                 async with session_scope() as session:
                     await services.activity_service.handle_incoming_message(

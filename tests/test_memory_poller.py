@@ -16,7 +16,7 @@ class _FakeMemoryConfig:
     enabled = True
     poll_enabled = True
     poll_interval_seconds = 1
-    poll_max_threads_per_tick = 4
+    poll_max_chats_per_tick = 4
     update_min_new_messages = 5
     update_min_interval_minutes = 60
     trigger_keywords = ("todo",)
@@ -86,7 +86,7 @@ async def test_tick_dispatches_memory_candidates(monkeypatch, patched_session):
         return [
             MemoryRefreshCandidate(
                 chat_id=-1001,
-                message_thread_id=42,
+                message_thread_id=0,
                 new_message_count=6,
                 latest_message_id=100,
                 latest_message_date=datetime(2026, 5, 11, tzinfo=UTC),
@@ -111,7 +111,7 @@ async def test_tick_dispatches_memory_candidates(monkeypatch, patched_session):
     assert svc.calls == [
         {
             "chat_id": -1001,
-            "message_thread_id": 42,
+            "message_thread_id": 0,
             "skip_threshold": True,
         }
     ]

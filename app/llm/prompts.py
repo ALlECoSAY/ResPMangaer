@@ -73,10 +73,12 @@ Required output:
 
 
 MEMORY_SYSTEM_PROMPT = """\
-You maintain compact long-term memory for a Telegram group with forum topics.
+You maintain compact long-term memory for one Telegram group chat.
 
 Rules:
 - Summarize only the supplied old memory and messages.
+- Treat all forum topics/threads as one shared chat memory. Do not split or
+  duplicate memory by thread.
 - Preserve useful chat/work context: themes, current projects, decisions,
   open questions, action items, and lightweight recurring jokes if clearly relevant.
 - Keep memory small. Prefer durable facts over transcript-like detail.
@@ -92,7 +94,8 @@ Rules:
 
 
 MEMORY_USER_PROMPT_TEMPLATE = """\
-Refresh compact memory for one Telegram chat/thread.
+Refresh compact memory for one Telegram chat. Messages may come from different
+forum topics, but memory is shared across the whole chat.
 
 Limits:
 - chat_summary <= {max_chat_chars} characters
@@ -102,7 +105,7 @@ Limits:
 Existing chat memory:
 {chat_memory}
 
-Existing thread memory:
+Existing chat detail memory:
 {thread_memory}
 
 New messages:

@@ -11,6 +11,10 @@ from app.bot.commands import parse_command
 from app.bot.formatting import reply_in_same_thread
 from app.db.session import session_scope
 from app.logging_config import get_logger
+from app.services.memory_service import (
+    format_explicit_memory_result,
+    is_explicit_memory_request,
+)
 from app.services.stats_image_renderer import StatsImageRenderer
 from app.services.stats_renderer import StatsRenderer
 from app.services.stats_report import StatsReport
@@ -39,10 +43,10 @@ HELP_TEXT = """Available commands:
 /tldr [12h|2d] - summarize the current thread
 /tldr_all [12h|2d] - summarize recent activity across the chat
 /stats [users|words|times|threads|reactions|fun] [days|12h|2d] - show chat statistics (image + collapsed details)
-/memory - show compact memory for the current thread
+/memory - show compact memory for this chat
 /memory_user - reply to a user's message to show stored user memory
-/memory_forget <thread|chat|all|user|fact> - admin only; forget stored memory
-/memory_refresh - admin only; rebuild compact memory for this thread
+/memory_forget <chat|all|user|fact> - admin only; forget stored memory
+/memory_refresh - admin only; rebuild compact memory for this chat
 /whitelist - admin only; reply to a user to start whitelisting
 /confirm_whitelist <user_id> - admin only; confirm a whitelist change
 
@@ -162,6 +166,36 @@ async def handle_ai_command(ctx: CommandContext) -> None:
             "Usage: /ai <question>",
             reply_to_message_id=ctx.message.message_id,
         )
+        return
+
+    if is_explicit_memory_request(question):
+        if ctx.memory_service is None or not ctx.memory_service.enabled:
+            await _reply(
+                ctx,
+                "Memory is disabled right now.",
+                reply_to_message_id=ctx.message.message_id,
+            )
+            return
+        try:
+            async with session_scope() as session:
+                result = await ctx.memory_service.remember_text(
+                    session,
+                    chat_id=ctx.message.chat.id,
+                    text=question,
+                    source_message_id=ctx.message.message_id,
+                )
+            await _reply(
+                ctx,
+                format_explicit_memory_result(result),
+                reply_to_message_id=ctx.message.message_id,
+            )
+        except SQLAlchemyError as exc:
+            log.error("memory_explicit.db_error", error=str(exc))
+            await _reply(
+                ctx,
+                "I could not update memory right now.",
+                reply_to_message_id=ctx.message.message_id,
+            )
         return
 
     try:
@@ -373,10 +407,9 @@ async def handle_memory_command(ctx: CommandContext) -> None:
 
     try:
         async with session_scope() as session:
-            text = await ctx.memory_service.describe_thread_memory(
+            text = await ctx.memory_service.describe_chat_memory(
                 session,
                 chat_id=ctx.message.chat.id,
-                message_thread_id=message_thread_id_for(ctx.message),
             )
         await _reply(ctx, text, reply_to_message_id=ctx.message.message_id)
     except SQLAlchemyError as exc:
@@ -441,7 +474,7 @@ async def handle_memory_forget_command(ctx: CommandContext) -> None:
     mode = parts[0].lower() if parts else ""
     rest = parts[1].strip() if len(parts) > 1 else ""
     usage = (
-        "Usage: /memory_forget thread | chat | all | user [user_id] | fact <text>. "
+        "Usage: /memory_forget chat | all | user [user_id] | fact <text>. "
         "For user, you can also reply to the user's message."
     )
     if not mode:

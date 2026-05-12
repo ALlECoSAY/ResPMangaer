@@ -29,6 +29,9 @@ _DEFAULT_TRIGGER_KEYWORDS = (
     "деплой",
     "баг",  # noqa: RUF001 (Cyrillic keyword intentional)
     "важно",
+    "запомни",
+    "запомнить",
+    "сохрани",
 )
 
 
@@ -49,7 +52,7 @@ class _MemoryLimits:
     update_reaction_min_count: int = 5
     poll_enabled: bool = False
     poll_interval_seconds: int = 300
-    poll_max_threads_per_tick: int = 5
+    poll_max_chats_per_tick: int = 5
 
 
 _DEFAULTS = _MemoryLimits(
@@ -58,7 +61,7 @@ _DEFAULTS = _MemoryLimits(
     max_chat_memory_chars=1800,
     max_thread_memory_chars=1800,
     max_user_memory_chars=1200,
-    update_min_new_messages=80,
+    update_min_new_messages=30,
     update_min_interval_minutes=360,
     max_profiles_per_prompt=6,
     summarize_model="openai/gpt-4.1-mini",
@@ -68,7 +71,7 @@ _DEFAULTS = _MemoryLimits(
     update_reaction_min_count=5,
     poll_enabled=False,
     poll_interval_seconds=300,
-    poll_max_threads_per_tick=5,
+    poll_max_chats_per_tick=5,
 )
 
 
@@ -143,8 +146,12 @@ class RuntimeMemoryConfig:
         return self._current().poll_interval_seconds
 
     @property
+    def poll_max_chats_per_tick(self) -> int:
+        return self._current().poll_max_chats_per_tick
+
+    @property
     def poll_max_threads_per_tick(self) -> int:
-        return self._current().poll_max_threads_per_tick
+        return self.poll_max_chats_per_tick
 
     def _current(self) -> _MemoryLimits:
         self._refresh_if_changed()
@@ -240,9 +247,12 @@ class RuntimeMemoryConfig:
                 user_api_section.get("poll_interval_seconds"),
                 _DEFAULTS.poll_interval_seconds,
             ),
-            poll_max_threads_per_tick=self._coerce_positive_int(
-                user_api_section.get("poll_max_threads_per_tick"),
-                _DEFAULTS.poll_max_threads_per_tick,
+            poll_max_chats_per_tick=self._coerce_positive_int(
+                user_api_section.get(
+                    "poll_max_chats_per_tick",
+                    user_api_section.get("poll_max_threads_per_tick"),
+                ),
+                _DEFAULTS.poll_max_chats_per_tick,
             ),
         )
 
@@ -269,7 +279,7 @@ class RuntimeMemoryConfig:
             update_reaction_min_count=limits.update_reaction_min_count,
             poll_enabled=limits.poll_enabled,
             poll_interval_seconds=limits.poll_interval_seconds,
-            poll_max_threads_per_tick=limits.poll_max_threads_per_tick,
+            poll_max_chats_per_tick=limits.poll_max_chats_per_tick,
         )
 
     @staticmethod

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, case, delete, false, func, or_, select
+from sqlalchemy import and_, case, delete, false, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,8 @@ from app.db.models import (
     TelegramThread,
     TelegramUser,
 )
+
+CHAT_SCOPED_MEMORY_THREAD_ID = 0
 
 
 @dataclass(frozen=True)
@@ -440,6 +442,67 @@ async def fetch_user_displays(
             display_name=label,
         )
     return displays
+
+
+async def find_user_display_in_chat(
+    session: AsyncSession,
+    chat_id: int,
+    label: str,
+) -> UserDisplay | None:
+    normalized = label.strip().lstrip("@").lower()
+    if not normalized:
+        return None
+
+    last_seen = func.max(TelegramMessage.telegram_date).label("last_seen")
+    stmt = (
+        select(
+            TelegramMessage.sender_user_id,
+            TelegramUser.username,
+            TelegramMessage.sender_display_name,
+            TelegramUser.first_name,
+            TelegramUser.last_name,
+            last_seen,
+        )
+        .outerjoin(TelegramUser, TelegramUser.id == TelegramMessage.sender_user_id)
+        .where(
+            TelegramMessage.chat_id == chat_id,
+            TelegramMessage.sender_user_id.is_not(None),
+            or_(
+                func.lower(TelegramMessage.sender_display_name) == normalized,
+                func.lower(TelegramUser.username) == normalized,
+                func.lower(TelegramUser.first_name) == normalized,
+            ),
+        )
+        .group_by(
+            TelegramMessage.sender_user_id,
+            TelegramUser.username,
+            TelegramMessage.sender_display_name,
+            TelegramUser.first_name,
+            TelegramUser.last_name,
+        )
+        .order_by(last_seen.desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    row = result.first()
+    if row is None:
+        return None
+
+    user_id, username, sender_display_name, first_name, last_name, _ = row
+    name_parts = [part for part in (first_name, last_name) if part]
+    if sender_display_name:
+        display = str(sender_display_name)
+    elif name_parts:
+        display = " ".join(str(part) for part in name_parts)
+    elif username:
+        display = str(username)
+    else:
+        display = f"user {int(user_id)}"
+    return UserDisplay(
+        user_id=int(user_id),
+        username=str(username) if username else None,
+        display_name=display,
+    )
 
 
 async def count_messages_by_hour(
@@ -921,6 +984,13 @@ async def delete_thread_memory(
     return int(result.rowcount or 0)
 
 
+async def delete_thread_memories_for_chat(session: AsyncSession, chat_id: int) -> int:
+    result = await session.execute(
+        delete(MemoryThreadProfile).where(MemoryThreadProfile.chat_id == chat_id)
+    )
+    return int(result.rowcount or 0)
+
+
 async def delete_user_memory(
     session: AsyncSession,
     chat_id: int,
@@ -946,7 +1016,7 @@ async def delete_all_memory_for_chat(session: AsyncSession, chat_id: int) -> int
 async def fetch_messages_for_memory_update(
     session: AsyncSession,
     chat_id: int,
-    message_thread_id: int,
+    message_thread_id: int | None,
     *,
     after_message_id: int | None,
     limit: int,
@@ -954,10 +1024,11 @@ async def fetch_messages_for_memory_update(
 ) -> list[TelegramMessage]:
     stmt = select(TelegramMessage).where(
         TelegramMessage.chat_id == chat_id,
-        TelegramMessage.message_thread_id == message_thread_id,
         TelegramMessage.is_bot_message.is_(False),
         TelegramMessage.is_command.is_(False),
     )
+    if message_thread_id is not None:
+        stmt = stmt.where(TelegramMessage.message_thread_id == message_thread_id)
     if after_message_id is not None:
         stmt = stmt.where(TelegramMessage.message_id > after_message_id)
     if latest:
@@ -987,10 +1058,9 @@ async def fetch_memory_refresh_candidates(
 ) -> list[MemoryRefreshCandidate]:
     memory_subq = (
         select(
-            MemoryThreadProfile.chat_id,
-            MemoryThreadProfile.message_thread_id,
-            MemoryThreadProfile.source_until_message_id,
-            MemoryThreadProfile.updated_at,
+            MemoryChatProfile.chat_id,
+            MemoryChatProfile.source_until_message_id,
+            MemoryChatProfile.updated_at,
         )
         .subquery()
     )
@@ -1037,17 +1107,14 @@ async def fetch_memory_refresh_candidates(
     stmt = (
         select(
             TelegramMessage.chat_id,
-            TelegramMessage.message_thread_id,
+            literal(CHAT_SCOPED_MEMORY_THREAD_ID).label("message_thread_id"),
             new_count.label("new_message_count"),
             func.max(TelegramMessage.message_id).label("latest_message_id"),
             func.max(TelegramMessage.telegram_date).label("latest_message_date"),
         )
         .outerjoin(
             memory_subq,
-            and_(
-                memory_subq.c.chat_id == TelegramMessage.chat_id,
-                memory_subq.c.message_thread_id == TelegramMessage.message_thread_id,
-            ),
+            memory_subq.c.chat_id == TelegramMessage.chat_id,
         )
         .outerjoin(
             reaction_counts,
@@ -1069,7 +1136,6 @@ async def fetch_memory_refresh_candidates(
         )
         .group_by(
             TelegramMessage.chat_id,
-            TelegramMessage.message_thread_id,
             memory_subq.c.updated_at,
         )
         .having(or_(*trigger_conditions))
